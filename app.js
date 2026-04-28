@@ -21,6 +21,21 @@ const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const newChatBtn = document.getElementById('newChatBtn');
 
+// Configure marked to handle links and line breaks
+marked.use({
+    gfm: true,
+    breaks: true
+});
+
+// Intercept link clicks to open in a new tab safely
+chatHistory.addEventListener('click', (e) => {
+    const link = e.target.closest('a');
+    if (link) {
+        e.preventDefault();
+        window.open(link.href, '_blank', 'noopener,noreferrer');
+    }
+});
+
 // Helper to generate IDs
 function generateId() {
     return Date.now().toString(36) + Math.random().toString(36).substring(2);
