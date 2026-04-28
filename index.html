@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hermes Coordinator Hub</title>
-    <link rel="stylesheet" href="styles.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css?v=8">
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="app-container">
@@ -15,9 +15,15 @@
             
             <!-- DGX Spark 2 -->
             <div class="agent-card" id="agent-dgx2">
-                <div class="agent-header">
-                    <div class="status-indicator online"></div>
-                    <h3>DGX Spark 2 (Primary)</h3>
+                <div class="agent-header" style="justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="status-indicator online"></div>
+                        <h3>DGX Spark 2 (Primary)</h3>
+                    </div>
+                    <label class="switch" title="Toggle Agent Participation">
+                        <input type="checkbox" id="enable-dgx2" checked>
+                        <span class="slider round"></span>
+                    </label>
                 </div>
                 <div class="agent-model">Qwen/Qwen3.5-72B</div>
                 <div class="agent-state" id="state-dgx2">Standing by</div>
@@ -25,9 +31,15 @@
 
             <!-- DGX Spark 1 -->
             <div class="agent-card" id="agent-dgx1">
-                <div class="agent-header">
-                    <div class="status-indicator online"></div>
-                    <h3>DGX Spark 1</h3>
+                <div class="agent-header" style="justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="status-indicator online"></div>
+                        <h3>DGX Spark 1</h3>
+                    </div>
+                    <label class="switch" title="Toggle Agent Participation">
+                        <input type="checkbox" id="enable-dgx1" checked>
+                        <span class="slider round"></span>
+                    </label>
                 </div>
                 <div class="agent-model">Intel/Qwen3.5-122B</div>
                 <div class="agent-state" id="state-dgx1">Standing by</div>
@@ -35,9 +47,15 @@
 
             <!-- Jetson Orin AGX -->
             <div class="agent-card" id="agent-jetson">
-                <div class="agent-header">
-                    <div class="status-indicator online"></div>
-                    <h3>Jetson Orin AGX 64GB</h3>
+                <div class="agent-header" style="justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="status-indicator online"></div>
+                        <h3>Jetson Orin AGX 64GB</h3>
+                    </div>
+                    <label class="switch" title="Toggle Agent Participation">
+                        <input type="checkbox" id="enable-jetson" checked>
+                        <span class="slider round"></span>
+                    </label>
                 </div>
                 <div class="agent-model">Kbenkhalad/Qwen3.5-35B</div>
                 <div class="agent-state" id="state-jetson">Standing by</div>
@@ -46,6 +64,13 @@
             <div class="sidebar-footer">
                 <p>Hermes Multi-Agent Orchestrator</p>
                 <p class="subtitle">Direct API Hub</p>
+                <button id="settingsBtn" class="retro-btn" style="margin-top: 16px; width: 100%; font-size: 0.9rem;" title="Open Settings">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                    SETTINGS
+                </button>
             </div>
         </aside>
 
@@ -67,11 +92,11 @@
                 <form id="chatForm">
                     <textarea 
                         id="messageInput" 
-                        placeholder="Ask the agents a question..." 
+                        placeholder="[Awaiting input...]" 
                         rows="1" 
                         autofocus
                     ></textarea>
-                    <button type="submit" id="sendBtn" title="Send message">
+                    <button type="submit" id="sendBtn" title="Transmit">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <line x1="22" y1="2" x2="11" y2="13"></line>
                             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
@@ -80,6 +105,50 @@
                 </form>
             </div>
         </main>
+
+        <!-- Right Sidebar: Chat History -->
+        <aside class="right-sidebar glass-panel">
+            <div class="right-sidebar-header">
+                <h2 class="sidebar-title">MEMORY BANK</h2>
+                <button id="newChatBtn" class="retro-btn" title="Start new session">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    NEW CHAT
+                </button>
+            </div>
+            <div class="session-list" id="sessionList">
+                <!-- Sessions populated via JS -->
+            </div>
+        </aside>
+    </div>
+    
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal-overlay" style="display: none;">
+        <div class="modal-content glass-panel">
+            <h2 class="sidebar-title" style="font-size: 1.5rem; margin-bottom: 20px;">SYSTEM CONFIGURATION</h2>
+            
+            <div class="settings-group">
+                <label>Primary Accent (Text, Borders)</label>
+                <input type="color" id="primaryColorInput" value="#00e5ff">
+            </div>
+            
+            <div class="settings-group">
+                <label>Secondary Accent (Muted, Tools)</label>
+                <input type="color" id="secondaryColorInput" value="#0099cc">
+            </div>
+            
+            <div class="settings-group">
+                <label>Background Space</label>
+                <input type="color" id="bgColorInput" value="#050e14">
+            </div>
+
+            <div style="display: flex; gap: 12px; margin-top: 24px;">
+                <button id="saveThemeBtn" class="retro-btn" style="flex: 1;">APPLY THEME</button>
+                <button id="closeSettingsBtn" class="retro-btn" style="flex: 1; border-color: rgba(255, 50, 50, 0.5); color: #ff3333;">CANCEL</button>
+            </div>
+        </div>
     </div>
     
     <!-- Render Markdown -->
