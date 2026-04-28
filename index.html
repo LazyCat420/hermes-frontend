@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes Coordinator Hub</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar: Agent Status -->
+        <aside class="sidebar glass-panel">
+            <h2 class="sidebar-title">AGENT STATUS</h2>
+            
+            <!-- DGX Spark 2 -->
+            <div class="agent-card" id="agent-dgx2">
+                <div class="agent-header">
+                    <div class="status-indicator online"></div>
+                    <h3>DGX Spark 2 (Primary)</h3>
+                </div>
+                <div class="agent-model">Qwen/Qwen3.5-72B</div>
+                <div class="agent-state" id="state-dgx2">Standing by</div>
+            </div>
+
+            <!-- DGX Spark 1 -->
+            <div class="agent-card" id="agent-dgx1">
+                <div class="agent-header">
+                    <div class="status-indicator online"></div>
+                    <h3>DGX Spark 1</h3>
+                </div>
+                <div class="agent-model">Intel/Qwen3.5-122B</div>
+                <div class="agent-state" id="state-dgx1">Standing by</div>
+            </div>
+
+            <!-- Jetson Orin AGX -->
+            <div class="agent-card" id="agent-jetson">
+                <div class="agent-header">
+                    <div class="status-indicator online"></div>
+                    <h3>Jetson Orin AGX 64GB</h3>
+                </div>
+                <div class="agent-model">Kbenkhalad/Qwen3.5-35B</div>
+                <div class="agent-state" id="state-jetson">Standing by</div>
+            </div>
+            
+            <div class="sidebar-footer">
+                <p>Hermes Multi-Agent Orchestrator</p>
+                <p class="subtitle">Direct API Hub</p>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header glass-panel">
+                <div class="header-info">
+                    <h1>Hermes Coordinator</h1>
+                    <span class="subtitle">Vanilla JS Direct API Hub</span>
+                </div>
+            </header>
+
+            <div class="chat-history" id="chatHistory">
+                <div class="system-message">System initialized. Connected to Hermes Hub.</div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="input-area glass-panel">
+                <form id="chatForm">
+                    <textarea 
+                        id="messageInput" 
+                        placeholder="Ask the agents a question..." 
+                        rows="1" 
+                        autofocus
+                    ></textarea>
+                    <button type="submit" id="sendBtn" title="Send message">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </form>
+            </div>
+        </main>
+    </div>
+    
+    <!-- Render Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="app.js?v=4"></script>
+</body>
+</html>
