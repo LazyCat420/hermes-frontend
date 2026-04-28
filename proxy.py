@@ -79,9 +79,9 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
                             break
                         self.wfile.write(line)
                         self.wfile.flush()
+                        if line.strip() == b"data: [DONE]":
+                            break
             except (ConnectionAbortedError, BrokenPipeError):
-                # The browser closed the connection while we were streaming to it. 
-                # This is normal when the user refreshes the page. We silently abort.
                 pass
             except Exception as e:
                 try:
@@ -94,7 +94,10 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-with socketserver.TCPServer(("", PORT), CORSAndProxyHandler) as httpd:
+class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    pass
+
+with ThreadingTCPServer(("", PORT), CORSAndProxyHandler) as httpd:
     print(f"Serving UI at http://localhost:{PORT}")
     print("Proxying API requests to bypass CORS:")
     for path, target in TARGETS.items():
