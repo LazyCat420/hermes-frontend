@@ -173,47 +173,142 @@ chatForm.addEventListener('submit', async (e) => {
 
     const activeAgents = getActiveAgents();
 
-    const huddleLoader = appendMessage('system', '<div class="typing-indicator" style="display:inline-block; margin-right: 10px;"><span></span><span></span><span></span></div> <i>Initiating Agent Huddle...</i>', 'System');
-    
+    const huddleContainer = appendMessage('system', '<strong>STRATEGY HUDDLE IN PROGRESS...</strong><div id="huddle-blocks" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;"></div>', 'System');
+    const huddleBlocks = huddleContainer.querySelector('#huddle-blocks');
+
     const huddlePromises = activeAgents.map(async (agentKey) => {
+        const agentName = AGENTS[agentKey].name;
+        
+        const agentBlock = document.createElement('div');
+        agentBlock.style.background = 'rgba(0,0,0,0.2)';
+        agentBlock.style.padding = '8px 12px';
+        agentBlock.style.borderRadius = '6px';
+        agentBlock.style.borderLeft = '3px solid var(--text-secondary)';
+        
+        agentBlock.innerHTML = `<div style="font-size: 0.8rem; font-weight: bold; margin-bottom: 4px; color: var(--text-primary); text-transform: uppercase;">${agentName}</div><div class="huddle-text" style="font-size: 0.9rem;"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+        huddleBlocks.appendChild(agentBlock);
+        const textDiv = agentBlock.querySelector('.huddle-text');
+
         const huddleMessages = [...globalHistory, {
             role: "user", 
             content: "SYSTEM HUDDLE: Before executing any tools, propose a brief 1-sentence strategy for how you will help answer the user's latest request. Do NOT execute tools yet. Just state your plan."
         }];
-        const result = await streamChat(agentKey, huddleMessages, () => {});
-        return { agent: AGENTS[agentKey].name, strategy: result.content };
+        
+        const result = await streamChat(agentKey, huddleMessages, (text) => {
+            textDiv.innerHTML = marked.parse(text);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        });
+        
+        return { agent: agentName, strategy: result.content || result.error };
     });
 
     const strategies = await Promise.all(huddlePromises);
-    
-    huddleLoader.parentElement.remove();
 
     let huddleSummary = "**STRATEGY HUDDLE COMPLETE:**\n\n";
     strategies.forEach(s => {
         huddleSummary += `- **${s.agent}**: ${s.strategy}\n`;
     });
     
-    appendMessage('system', huddleSummary, 'Huddle Summary');
+    // We already have the live rendering, so we just update the global history silently
     globalHistory.push({ role: "system", content: huddleSummary + "\nNow, execute your part of the strategy using your native tools to fulfill the user's original request." });
     saveCurrentSession();
 
-    Promise.all(activeAgents.map(ak => orchestrate(ak, [...globalHistory]))).then(async (results) => {
-        let combinedResponse = "";
+    // 2. Real-time Scratchpad / Execution Phase
+    const detailsWrapper = document.createElement('div');
+    detailsWrapper.innerHTML = `
+        <details class="agent-work-details" open>
+            <summary class="agent-work-summary">Live Agent Scratchpads (${activeAgents.length} agents)</summary>
+            <div class="agent-work-content" id="live-scratchpads"></div>
+        </details>
+    `;
+    const scratchpadMsgDiv = appendMessage('system', '', 'Execution Phase');
+    scratchpadMsgDiv.innerHTML = '';
+    scratchpadMsgDiv.appendChild(detailsWrapper);
+    
+    const liveContentDiv = detailsWrapper.querySelector('#live-scratchpads');
+
+    const execPromises = activeAgents.map(async (agentKey) => {
+        const agentName = AGENTS[agentKey].name;
+        
+        const blockDiv = document.createElement('div');
+        blockDiv.className = 'individual-agent-block';
+        blockDiv.innerHTML = `
+            <div class="individual-agent-name">${agentName}</div>
+            <div class="individual-agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>
+        `;
+        liveContentDiv.appendChild(blockDiv);
+        const textDiv = blockDiv.querySelector('.individual-agent-text');
+        
+        const result = await streamChat(agentKey, [...globalHistory], (text) => {
+            textDiv.innerHTML = marked.parse(text);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }, blockDiv);
+        
+        const content = result.content || result.error;
+        const isError = result.type === 'error' || (content && (content.includes("Error:") || content.includes("TASK FAILED")));
+        
+        return { agent: agentName, result: content, isError: isError };
+    });
+
+    Promise.all(execPromises).then(async (results) => {
         let hasFailure = false;
         let failedAgents = [];
+        let synthesizerContext = `Here are the individual findings from the agents:\n\n`;
 
-        results.forEach((res, i) => {
-            const agentName = AGENTS[activeAgents[i]].name;
-            combinedResponse += `[${agentName}]: ${res}\n`;
+        results.forEach((r) => {
+            synthesizerContext += `--- [${r.agent}] ---\n${r.result}\n\n`;
 
-            if (res.includes("Error:") || res.includes("TASK FAILED")) {
+            if (r.isError) {
                  hasFailure = true;
-                 failedAgents.push(agentName);
+                 failedAgents.push(r.agent);
             }
         });
 
-        globalHistory.push({ role: "assistant", content: combinedResponse });
-        saveCurrentSession();
+        // Close the details block after execution finishes to keep UI clean
+        detailsWrapper.querySelector('details').removeAttribute('open');
+        detailsWrapper.querySelector('.agent-work-summary').innerText = `View Individual Agent Scratchpads (${activeAgents.length} agents)`;
+
+        // 3. Synthesizer Phase
+        const synthesizerKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
+        const synthesizerMessages = [
+            ...globalHistory,
+            { role: "user", content: "SYSTEM INSTRUCTION: " + synthesizerContext + "\n\nPlease synthesize the above findings into one final, unified response to the user's original request. If the agents had questions for the user, consolidate them into ONE unified question at the end. Do not mention that you are summarizing other agents, just provide the final answer directly as Hermes Orchestrator." }
+        ];
+
+        const finalContentDiv = appendMessage('assistant', '<div class="typing-indicator"><span></span><span></span><span></span></div>', 'Hermes Orchestrator');
+        
+        const finalResult = await streamChat(synthesizerKey, synthesizerMessages, (text) => {
+            finalContentDiv.innerHTML = marked.parse(text);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        });
+
+        if (finalResult.type === 'text') {
+            // Build the static HTML for history preservation (so next page reload shows it)
+            let staticScratchpadHtml = `<div class="agent-work-content">`;
+            results.forEach(r => {
+                staticScratchpadHtml += `
+                    <div class="individual-agent-block">
+                        <div class="individual-agent-name">${r.agent}</div>
+                        <div class="individual-agent-text">${marked.parse(r.result)}</div>
+                    </div>
+                `;
+            });
+            staticScratchpadHtml += `</div>`;
+            
+            const detailsHtml = `
+                <details class="agent-work-details">
+                    <summary class="agent-work-summary">View Individual Agent Scratchpads (${activeAgents.length} agents)</summary>
+                    ${staticScratchpadHtml}
+                </details>
+            `;
+            
+            globalHistory.push({ role: "assistant", content: finalResult.content + "\n\n" + detailsHtml });
+            saveCurrentSession();
+        } else if (finalResult.type === 'error') {
+            finalContentDiv.innerHTML = `<span style="color: #ef4444;">Error during synthesis: ${finalResult.error}</span>`;
+            globalHistory.push({ role: "assistant", content: `Error during synthesis: ${finalResult.error}` });
+            saveCurrentSession();
+        }
 
         if (hasFailure && activeAgents.length > 1) {
             appendMessage('system', `<div class="typing-indicator" style="display:inline-block; margin-right: 10px;"><span></span><span></span><span></span></div> <i>Failure detected from ${failedAgents.join(', ')}. Initiating Recovery Phase...</i>`, 'System');
@@ -221,7 +316,8 @@ chatForm.addEventListener('submit', async (e) => {
             globalHistory.push({ role: "user", content: "SYSTEM ALERT: One or more agents encountered a failure. Can another agent try a different approach to solve the user's request?" });
             saveCurrentSession();
             
-            const recoveryResults = await Promise.all(activeAgents.map(ak => orchestrate(ak, [...globalHistory])));
+            // In recovery, we can just use the hidden orchestrate so it doesn't spam too much, or we could stream it. We'll use hidden.
+            const recoveryResults = await Promise.all(activeAgents.map(ak => orchestrateHidden(ak, [...globalHistory])));
             
             let recoveryCombined = "";
             recoveryResults.forEach((res, i) => {
@@ -229,6 +325,8 @@ chatForm.addEventListener('submit', async (e) => {
             });
             globalHistory.push({ role: "assistant", content: recoveryCombined });
             saveCurrentSession();
+            
+            appendMessage('assistant', recoveryCombined, 'Hermes Orchestrator (Recovery)');
         }
 
         sendBtn.disabled = false;
@@ -273,7 +371,7 @@ function appendMessage(role, content, senderName = '') {
     return contentDiv;
 }
 
-function appendToolCall(agentName, toolName) {
+function appendToolCall(agentName, toolName, targetContainer = null) {
     const div = document.createElement('div');
     div.className = 'tool-call-block';
     
@@ -285,11 +383,16 @@ function appendToolCall(agentName, toolName) {
     `;
     
     div.appendChild(header);
-    chatHistory.appendChild(div);
+    
+    if (targetContainer) {
+        targetContainer.appendChild(div);
+    } else {
+        chatHistory.appendChild(div);
+    }
     chatHistory.scrollTop = chatHistory.scrollHeight;
 }
 
-async function streamChat(agentKey, messages, onChunk) {
+async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
     const url = AGENTS[agentKey].url;
     setAgentStatus(agentKey, "Processing...", true);
 
@@ -344,7 +447,7 @@ async function streamChat(agentKey, messages, onChunk) {
                         try {
                             const data = JSON.parse(trimmedLine.substring(6));
                             if (data.tool_name) {
-                                appendToolCall(AGENTS[agentKey].name, data.tool_name);
+                                appendToolCall(AGENTS[agentKey].name, data.tool_name, toolContainer);
                             }
                         } catch(e) {}
                     } else {
@@ -371,6 +474,18 @@ async function streamChat(agentKey, messages, onChunk) {
         setAgentStatus(agentKey, "Error", false);
         console.error("Stream error:", error);
         return { type: 'error', error: error.message };
+    }
+}
+
+async function orchestrateHidden(agentKey, messages) {
+    const result = await streamChat(agentKey, messages, null);
+
+    if (result.type === 'error') {
+        return `Error: ${result.error}`;
+    }
+
+    if (result.type === 'text') {
+        return result.content;
     }
 }
 

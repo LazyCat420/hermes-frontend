@@ -665,3 +665,51 @@ input:checked + .slider:before {
     border: 1px solid var(--text-primary);
     border-radius: 4px;
 }
+
+/* Agent Work Collapsible Styles */
+.agent-work-details {
+    margin-top: 16px;
+    background: rgba(var(--bg-rgb), 0.3);
+    border: 1px dashed var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 0.85rem;
+}
+
+.agent-work-summary {
+    padding: 10px 16px;
+    cursor: pointer;
+    font-weight: bold;
+    color: var(--text-secondary);
+    background: rgba(var(--primary-rgb), 0.05);
+    user-select: none;
+    transition: background 0.2s;
+}
+
+.agent-work-summary:hover {
+    background: rgba(var(--primary-rgb), 0.15);
+}
+
+.agent-work-content {
+    padding: 16px;
+    border-top: 1px dashed var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.individual-agent-block {
+    background: rgba(0, 0, 0, 0.4);
+    padding: 12px;
+    border-radius: 6px;
+    border-left: 3px solid var(--text-secondary);
+}
+
+.individual-agent-name {
+    font-size: 0.8rem;
+    font-weight: bold;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
