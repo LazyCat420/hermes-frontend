@@ -39,8 +39,27 @@ def init_db():
             success_rate FLOAT,
             tokens_used INTEGER,
             latency_ms INTEGER,
+            collaboration_rounds INTEGER DEFAULT 1,
+            conflict_resolution BOOLEAN DEFAULT false,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        """)
+        
+        # Ensure new columns exist for existing databases
+        cursor.execute("""
+        DO $$
+        BEGIN
+            BEGIN
+                ALTER TABLE deep_evals ADD COLUMN collaboration_rounds INTEGER DEFAULT 1;
+            EXCEPTION
+                WHEN duplicate_column THEN NULL;
+            END;
+            BEGIN
+                ALTER TABLE deep_evals ADD COLUMN conflict_resolution BOOLEAN DEFAULT false;
+            EXCEPTION
+                WHEN duplicate_column THEN NULL;
+            END;
+        END $$;
         """)
 
         print("Creating auto_research_logs table...")

@@ -947,3 +947,121 @@ input:checked + .slider:before {
     font-size: 0.9rem;
     color: #e5e7eb;
 }
+
+/* Mission Storyboard Styles */
+.mission-storyboard {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 10px;
+    margin-bottom: 20px;
+}
+
+.board-panel {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.board-header {
+    font-family: 'VT323', monospace;
+    font-size: 1.3rem;
+    color: var(--accent-blue);
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(59, 130, 246, 0.3);
+    padding-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.board-status {
+    font-size: 0.9rem;
+    color: #fbbf24;
+    animation: pulse 2s infinite;
+}
+
+.board-content {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.agent-contribution {
+    background: rgba(255, 255, 255, 0.03);
+    border-left: 3px solid var(--text-secondary);
+    padding: 12px;
+    border-radius: 4px;
+}
+
+.agent-contribution .agent-role {
+    font-size: 0.8rem;
+    font-weight: bold;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+}
+
+.agent-contribution .agent-text {
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+
+.findings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 12px;
+}
+
+.finding-card {
+    background: rgba(16, 185, 129, 0.05);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.finding-source {
+    font-size: 0.75rem;
+    color: #10b981;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+}
+
+.checkpoint-decision {
+    text-align: center;
+    font-weight: bold;
+    font-size: 1.1rem;
+    padding: 10px;
+    border-radius: 6px;
+}
+
+.checkpoint-decision.consensus-true {
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.checkpoint-decision.consensus-false {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.processing-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(16, 185, 129, 0.3);
+    border-top: 2px solid #10b981;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    display: inline-block;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}

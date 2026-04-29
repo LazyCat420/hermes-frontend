@@ -59,7 +59,7 @@ def mutate_agent(x, y):
     
     return {"status": "success", "parent_id": parent['id'], "new_id": new_id, "label": new_label, "x": x, "y": y}
 
-def submit_eval(x, y, success_rate, tokens, latency, eval_type="task_completion"):
+def submit_eval(x, y, success_rate, tokens, latency, collaboration_rounds=1, conflict_resolution=False, eval_type="task_completion"):
     """Submits an eval and updates the score. If score > 0.8, becomes elite."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -74,9 +74,9 @@ def submit_eval(x, y, success_rate, tokens, latency, eval_type="task_completion"
     
     # Log the eval
     cursor.execute("""
-        INSERT INTO deep_evals (generation_id, eval_type, success_rate, tokens_used, latency_ms)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (grid_id, eval_type, success_rate, tokens, latency))
+        INSERT INTO deep_evals (generation_id, eval_type, success_rate, tokens_used, latency_ms, collaboration_rounds, conflict_resolution)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """, (grid_id, eval_type, success_rate, tokens, latency, collaboration_rounds, conflict_resolution))
     
     # Get all evals for this generation to update moving average score
     cursor.execute("SELECT AVG(success_rate) FROM deep_evals WHERE generation_id = %s", (grid_id,))

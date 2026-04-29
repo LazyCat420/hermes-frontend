@@ -113,7 +113,9 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
                     body.get('y', 0),
                     body.get('success_rate', 0.0),
                     body.get('tokens', 0),
-                    body.get('latency', 0)
+                    body.get('latency', 0),
+                    body.get('collaboration_rounds', 1),
+                    body.get('conflict_resolution', False)
                 )
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -154,33 +156,6 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
 
-        if self.path == "/api/tools/search":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length)
-            data = json.loads(body)
-            query = data.get("query", "")
-            
-            try:
-                from duckduckgo_search import DDGS
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=5))
-                
-                formatted = ""
-                for r in results:
-                    formatted += f"Title: {r.get('title')}\nSnippet: {r.get('body')}\nURL: {r.get('href')}\n\n"
-                    
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({"result": formatted}).encode())
-                return
-            except Exception as e:
-                self.send_response(500)
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
-                return
 
         target_url = None
         for path, url in TARGETS.items():

@@ -7,12 +7,15 @@ const AGENTS = {
 
 // Persistence State
 const STORAGE_KEY = 'hermes_sessions';
-let currentSessionId = null;
 let DEFAULT_SYSTEM_PROMPT = {
     role: "system",
     content: "You are part of a 3-agent swarm (Jetson, DGX1, DGX2). Coordinate and execute tasks intelligently. If your tool fails or you cannot complete your task, explicitly include the exact phrase 'TASK FAILED' in your response so other agents can step in. ALWAYS cite your sources using clickable markdown links, e.g., [Title](url), so the user can verify the data."
 };
 let globalHistory = [DEFAULT_SYSTEM_PROMPT];
+let currentSessionId = null;
+let processingSessions = {};
+let sessionDOMs = {};
+let globalMissionStates = {}; // sessionId -> missionState
 let activeArchetype = { x: 0, y: 0 };
 let liveArchetypes = [];
 
@@ -22,9 +25,6 @@ const chatForm = document.getElementById('chatForm');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const newChatBtn = document.getElementById('newChatBtn');
-
-const sessionDOMs = {};
-const processingSessions = {};
 
 // Configure marked to handle links and line breaks
 marked.use({
@@ -56,9 +56,16 @@ function loadSessionsFromStorage() {
         const div = document.createElement('div');
         div.className = `session-item ${s.id === currentSessionId ? 'active' : ''}`;
         
+        const state = globalMissionStates[s.id];
+        const isProcessing = state && state.status && state.status !== 'complete';
+        const processingHtml = isProcessing ? `<div class="processing-spinner" title="Processing..."></div>` : '';
+
         div.innerHTML = `
             <div class="session-info" onclick="loadSession('${s.id}')">
-                <div class="session-title">${s.title || 'New Chat'}</div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <div class="session-title">${s.title || 'New Chat'}</div>
+                    ${processingHtml}
+                </div>
                 <div class="session-date">${new Date(s.date).toLocaleString()}</div>
             </div>
             <button class="delete-btn" onclick="deleteSession('${s.id}', event)" title="Delete Chat">
@@ -85,23 +92,23 @@ function deleteSession(id, event) {
     }
 }
 
-function saveSession(id, history, customTitle = null) {
+function saveSession(id, history, missionState = null) {
     const sessions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
     const existingIndex = sessions.findIndex(s => s.id === id);
+    let title = history.length > 1 ? history[1].content.substring(0, 30) + '...' : 'New Chat';
     
-    let title = customTitle || "New Chat";
-    if (!customTitle) {
-        const firstUserMsg = history.find(m => m.role === 'user' && !m.content.startsWith('SYSTEM'));
-        if (firstUserMsg) {
-            title = firstUserMsg.content.substring(0, 30) + (firstUserMsg.content.length > 30 ? '...' : '');
-        }
+    if (missionState) {
+        globalMissionStates[id] = missionState;
+    } else if (globalMissionStates[id]) {
+        missionState = globalMissionStates[id];
     }
 
     const sessionData = {
         id: id,
         title: title,
         date: existingIndex >= 0 ? sessions[existingIndex].date : Date.now(),
-        history: history
+        history: history,
+        missionState: missionState || null
     };
 
     if (existingIndex >= 0) {
@@ -111,7 +118,118 @@ function saveSession(id, history, customTitle = null) {
     }
     
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
-    if (id === currentSessionId) loadSessionsFromStorage();
+    loadSessionsFromStorage();
+}
+
+
+// Incremental save helper
+let saveTimeout;
+function throttledSaveSession(id, history, state) {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => saveSession(id, history, state), 500);
+}
+
+function restoreStoryboard(state, container, sessionId) {
+    const storyboardMsg = appendMessage('system', '', 'Mission Storyboard', true, container);
+    
+    // Determine status text/color based on state.status
+    let planStatus = "Round 1 (Proposals)";
+    let planColor = "";
+    if (state.status === "planning_round_2") planStatus = "Round 2 (Commitment)";
+    if (["retrieval", "checkpoint", "synthesis", "complete"].includes(state.status)) {
+        planStatus = "Locked";
+        planColor = "color: #10b981; animation: none;";
+    }
+    
+    let findingsDisplay = ["retrieval", "checkpoint", "synthesis", "complete"].includes(state.status) ? "flex" : "none";
+    let findStatus = "Retrieval in progress";
+    let findColor = "";
+    if (["checkpoint", "synthesis", "complete"].includes(state.status)) {
+        findStatus = "Complete";
+        findColor = "color: #10b981; animation: none;";
+    }
+    
+    let cpDisplay = ["checkpoint", "synthesis", "complete"].includes(state.status) ? "flex" : "none";
+    let cpStatus = "Evaluating";
+    let cpColor = "";
+    if (["synthesis", "complete"].includes(state.status)) {
+        cpStatus = "Locked";
+        cpColor = "color: #10b981; animation: none;";
+    }
+
+    storyboardMsg.innerHTML = `
+        <div class="mission-storyboard">
+            <div class="board-panel" id="planning-board-${sessionId}">
+                <div class="board-header">Planning Board <span class="board-status" style="${planColor}">${planStatus}</span></div>
+                <div class="board-content"></div>
+            </div>
+            <div class="board-panel" id="findings-board-${sessionId}" style="display: ${findingsDisplay};">
+                <div class="board-header">Findings Board <span class="board-status" style="${findColor}">${findStatus}</span></div>
+                <div class="board-content findings-grid"></div>
+            </div>
+            <div class="board-panel" id="checkpoint-board-${sessionId}" style="display: ${cpDisplay};">
+                <div class="board-header">Checkpoint <span class="board-status" style="${cpColor}">${cpStatus}</span></div>
+                <div class="board-content"></div>
+            </div>
+        </div>
+    `;
+
+    // Populate Planning Board
+    const planContent = storyboardMsg.querySelector(`#planning-board-${sessionId} .board-content`);
+    
+    if (["planning_round_1"].includes(state.status)) {
+        Object.entries(state.planningBoard.round1Proposals || {}).forEach(([agentKey, text]) => {
+            const agentName = AGENTS[agentKey]?.name || agentKey;
+            const div = document.createElement('div');
+            div.className = 'agent-contribution';
+            div.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text">${marked.parse(text || '')}</div>`;
+            planContent.appendChild(div);
+        });
+        
+    } else {
+        Object.entries(state.planningBoard.finalAssignments || {}).forEach(([agentKey, text]) => {
+            const agentName = AGENTS[agentKey]?.name || agentKey;
+            const div = document.createElement('div');
+            div.className = 'agent-contribution';
+            div.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text">${marked.parse(text || '')}</div>`;
+            planContent.appendChild(div);
+        });
+        
+    }
+
+    // Populate Findings Board
+    if (findingsDisplay === "flex") {
+        const findingsContent = storyboardMsg.querySelector(`#findings-board-${sessionId} .board-content`);
+        (state.findingsBoard || []).forEach(f => {
+            const cardDiv = document.createElement('div');
+            cardDiv.className = 'finding-card';
+            if (f.agent.includes('(Follow-up)')) cardDiv.style.border = '1px solid rgba(245, 158, 11, 0.4)';
+            cardDiv.innerHTML = `<div class="finding-source">${f.agent}</div><div class="finding-text">${marked.parse(f.content || '')}</div>`;
+            findingsContent.appendChild(cardDiv);
+        });
+        
+    }
+
+    // Populate Checkpoint Board
+    if (cpDisplay === "flex") {
+        const cpContent = storyboardMsg.querySelector(`#checkpoint-board-${sessionId} .board-content`);
+        if (state.checkpointBoard.analysis) {
+            const cpDiv = document.createElement('div');
+            cpDiv.className = 'agent-contribution';
+            cpDiv.innerHTML = `<div class="agent-role">Evaluator</div><div class="agent-text">${marked.parse(state.checkpointBoard.analysis)}</div>`;
+            cpContent.appendChild(cpDiv);
+            
+            const decDiv = document.createElement('div');
+            if (state.checkpointBoard.analysis.includes('CONSENSUS: FALSE')) {
+                decDiv.className = 'checkpoint-decision consensus-false';
+                decDiv.innerText = 'CONSENSUS: FALSE - Triggering Follow-up Pass';
+            } else {
+                decDiv.className = 'checkpoint-decision consensus-true';
+                decDiv.innerText = 'CONSENSUS: TRUE - Proceeding to Synthesis';
+            }
+            cpContent.appendChild(decDiv);
+        }
+    }
 }
 
 function saveCurrentSession() {
@@ -142,11 +260,12 @@ function loadSession(id) {
         currentSessionId = id;
         switchChatContainer(id);
         
-        if (!processingSessions[id]) {
-            globalHistory = session.history;
-            renderHistory();
-        } else {
-            globalHistory = session.history;
+        globalHistory = session.history;
+        if (session.missionState) globalMissionStates[id] = session.missionState;
+        renderHistory();
+        
+        if (session.missionState && session.missionState.status !== 'complete' && !processingSessions[id]) {
+            resumeMission(id, session.history, session.missionState);
         }
         
         loadSessionsFromStorage();
@@ -157,6 +276,7 @@ function startNewChat() {
     currentSessionId = generateId();
     switchChatContainer(currentSessionId);
     globalHistory = [DEFAULT_SYSTEM_PROMPT];
+    globalMissionStates[currentSessionId] = null;
     renderHistory();
     saveCurrentSession();
 }
@@ -165,9 +285,17 @@ function renderHistory() {
     const container = sessionDOMs[currentSessionId];
     if (!container) return;
     container.innerHTML = '<div class="system-message">System initialized. Connected to Hermes Hub.</div>';
-    globalHistory.forEach(msg => {
+    
+    const mState = globalMissionStates[currentSessionId];
+    
+    globalHistory.forEach((msg, idx) => {
         if (msg.role === 'system' && msg.content === DEFAULT_SYSTEM_PROMPT.content) return; // skip initial prompt
         
+        // Hide intermediate backend system contexts if missionState exists
+        if (mState && msg.role === 'system' && msg.content.startsWith('TEAM PLAN LOCK')) return;
+        if (mState && msg.role === 'system' && msg.content.startsWith('EVIDENCE FOUND')) return;
+        if (mState && msg.role === 'system' && msg.content.startsWith('CHECKPOINT FAILED')) return;
+
         let senderName = '';
         if (msg.role === 'system') senderName = 'System';
         if (msg.role === 'user') senderName = 'You';
@@ -178,7 +306,20 @@ function renderHistory() {
         } else {
             appendMessage(msg.role, msg.content, senderName, false, container);
         }
+        
+        // Inject storyboard after user message if this was the last mission run
+        let lastUserIdx = -1;
+        for(let i=globalHistory.length-1; i>=0; i--) {
+            if(globalHistory[i].role === 'user') { lastUserIdx = i; break; }
+        }
+        
+        if (mState && idx === lastUserIdx && msg.role === 'user') {
+            restoreStoryboard(mState, container, currentSessionId);
+        }
     });
+    
+    
+    
     container.scrollTop = container.scrollHeight;
 }
 
@@ -243,7 +384,6 @@ chatForm.addEventListener('submit', async (e) => {
     messageInput.value = '';
     messageInput.style.height = 'auto';
 
-    // Capture state for this background run
     const thisSessionId = currentSessionId;
     const thisContainer = sessionDOMs[thisSessionId];
     let thisHistory = [...globalHistory];
@@ -255,237 +395,276 @@ chatForm.addEventListener('submit', async (e) => {
 
     appendMessage('user', text, 'You', false, thisContainer);
     thisHistory.push({ role: 'user', content: text });
-    saveSession(thisSessionId, thisHistory);
     
-    if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
+    // Initialize Mission State
+    let missionState = {
+        objective: text,
+        status: "planning_round_1",
+        planningBoard: { round1Proposals: {}, finalAssignments: {} },
+        findingsBoard: [],
+        checkpointBoard: { missingEvidence: [], conflicts: [], consensusReached: false }
+    };
+    
+    saveSession(thisSessionId, thisHistory, missionState);
+    if (currentSessionId === thisSessionId) {
+        globalHistory = [...thisHistory];
+        globalMissionStates[thisSessionId] = missionState;
+    }
 
     const activeAgents = getActiveAgents();
 
-    const huddleContainer = appendMessage('system', '<strong>STRATEGY HUDDLE IN PROGRESS...</strong><div class="huddle-blocks" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;"></div>', 'System', true, thisContainer);
-    const huddleBlocks = huddleContainer.querySelector('.huddle-blocks');
-
-    let currentHuddleContext = "";
-    const strategies = [];
-
-    // Sequential Huddle
-    for (const agentKey of activeAgents) {
-        const agentName = AGENTS[agentKey].name;
-        
-        const agentBlock = document.createElement('div');
-        agentBlock.style.background = 'rgba(0,0,0,0.2)';
-        agentBlock.style.padding = '8px 12px';
-        agentBlock.style.borderRadius = '6px';
-        agentBlock.style.borderLeft = '3px solid var(--text-secondary)';
-        
-        agentBlock.innerHTML = `<div style="font-size: 0.8rem; font-weight: bold; margin-bottom: 4px; color: var(--text-primary); text-transform: uppercase;">${agentName}</div><div class="huddle-text" style="font-size: 0.9rem;"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
-        huddleBlocks.appendChild(agentBlock);
-        const textDiv = agentBlock.querySelector('.huddle-text');
-
-        let contextPrompt = `SYSTEM HUDDLE: You are ${agentName}. Before executing any tools, propose a brief 1-sentence strategy for how you will help answer the user's latest request. Do NOT execute tools yet. Just state your plan.`;
-        
-        if (currentHuddleContext !== "") {
-            contextPrompt = `SYSTEM HUDDLE: You are ${agentName}. Here is what the other agents have proposed so far:
-${currentHuddleContext}
-
-Please propose a brief 1-sentence strategy for how YOU will help answer the user's request. **CRITICAL: You must choose a DIFFERENT, non-overlapping approach or target different data sources from the agents above.** Do NOT execute tools yet. Just state your plan.`;
-        }
-        
-        const huddleMessages = [...thisHistory, {
-            role: "user", 
-            content: contextPrompt
-        }];
-        
-        const result = await streamChat(agentKey, huddleMessages, (text) => {
-            textDiv.innerHTML = marked.parse(text);
-            thisContainer.scrollTop = thisContainer.scrollHeight;
-        }, thisContainer);
-        
-        const finalStrategy = result.content || result.error;
-        strategies.push({ agent: agentName, strategy: finalStrategy });
-        currentHuddleContext += `- ${agentName}: ${finalStrategy}\n`;
-    }
-
-    let huddleSummary = "**STRATEGY HUDDLE COMPLETE:**\n\n";
-    let staticHuddleHtml = `<strong>STRATEGY HUDDLE COMPLETE</strong><div style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">`;
-    strategies.forEach(s => {
-        huddleSummary += `- **${s.agent}**: ${s.strategy}\n`;
-        staticHuddleHtml += `
-            <div style="background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px; border-left: 3px solid var(--text-secondary);">
-                <div style="font-size: 0.8rem; font-weight: bold; margin-bottom: 4px; color: var(--text-primary); text-transform: uppercase;">${s.agent}</div>
-                <div style="font-size: 0.9rem;">${marked.parse(s.strategy)}</div>
+    // Inject Storyboard UI
+    const storyboardMsg = appendMessage('system', '', 'Mission Storyboard', true, thisContainer);
+    storyboardMsg.innerHTML = `
+        <div class="mission-storyboard">
+            <div class="board-panel" id="planning-board-${thisSessionId}">
+                <div class="board-header">Planning Board <span class="board-status">Round 1 (Proposals)</span></div>
+                <div class="board-content"></div>
             </div>
-        `;
-    });
-    staticHuddleHtml += `</div>`;
-    
-    thisHistory.push({ 
-        role: "system", 
-        content: huddleSummary + "\nNow, execute YOUR SPECIFIC PART of the strategy using your native tools to fulfill the user's original request. DO NOT duplicate the work of the other agents.",
-        displayContent: staticHuddleHtml
-    });
-    saveSession(thisSessionId, thisHistory);
-    if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
-
-    // Execution Phase
-    const detailsWrapper = document.createElement('div');
-    detailsWrapper.innerHTML = `
-        <div class="agent-work-details">
-            <div class="agent-work-summary" style="font-weight: bold; margin-bottom: 8px;">Live Agent Scratchpads (${activeAgents.length} agents)</div>
-            <div class="agent-work-content live-scratchpads"></div>
+            <div class="board-panel" id="findings-board-${thisSessionId}" style="display: none;">
+                <div class="board-header">Findings Board <span class="board-status">Retrieval in progress</span></div>
+                <div class="board-content findings-grid"></div>
+            </div>
+            <div class="board-panel" id="checkpoint-board-${thisSessionId}" style="display: none;">
+                <div class="board-header">Checkpoint <span class="board-status">Evaluating</span></div>
+                <div class="board-content"></div>
+            </div>
         </div>
     `;
-    const scratchpadMsgDiv = appendMessage('system', '', 'Execution Phase', true, thisContainer);
-    scratchpadMsgDiv.innerHTML = '';
-    scratchpadMsgDiv.appendChild(detailsWrapper);
     
-    const liveContentDiv = detailsWrapper.querySelector('.live-scratchpads');
-
-    const execPromises = activeAgents.map(async (agentKey) => {
+    const planningBoard = document.getElementById(`planning-board-${thisSessionId}`);
+    const planningContent = planningBoard.querySelector('.board-content');
+    const planningStatus = planningBoard.querySelector('.board-status');
+    
+    // ==========================================
+    // PHASE 1: ROLE NEGOTIATION (2-ROUNDS)
+    // ==========================================
+    
+    // Round 1: Parallel Proposals
+    const round1Promises = activeAgents.map(async (agentKey) => {
         const agentName = AGENTS[agentKey].name;
+        const prompt = `MISSION: "${text}". Propose a soft role (Scout, Analyst, or Synthesist) and a 1-sentence strategy for what you will investigate. DO NOT execute tools yet.`;
         
-        const blockDiv = document.createElement('div');
-        blockDiv.className = 'individual-agent-block';
-        blockDiv.innerHTML = `
-            <div class="individual-agent-name">${agentName}</div>
-            <div class="individual-agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>
-        `;
-        liveContentDiv.appendChild(blockDiv);
-        const textDiv = blockDiv.querySelector('.individual-agent-text');
+        const agentDiv = document.createElement('div');
+        agentDiv.className = 'agent-contribution';
+        agentDiv.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+        planningContent.appendChild(agentDiv);
+        const textDiv = agentDiv.querySelector('.agent-text');
         
-        const result = await streamChat(agentKey, [...thisHistory], (text) => {
-            textDiv.innerHTML = marked.parse(text);
+        const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
+            textDiv.innerHTML = marked.parse(chunk);
             thisContainer.scrollTop = thisContainer.scrollHeight;
         }, thisContainer);
         
-        const content = result.content || result.error;
-        const isError = result.type === 'error' || (content && (content.includes("Error:") || content.includes("TASK FAILED")));
-        
-        return { agent: agentName, result: content, isError: isError };
+        missionState.planningBoard.round1Proposals[agentKey] = result.content;
+        return { agentKey, name: agentName, content: result.content };
     });
-
-    Promise.all(execPromises).then(async (results) => {
-        let hasFailure = false;
-        let failedAgents = [];
-        let synthesizerContext = `Here are the individual findings from the agents:\n\n`;
-
-        results.forEach((r) => {
-            synthesizerContext += `--- [${r.agent}] ---\n${r.result}\n\n`;
-
-            if (r.isError) {
-                 hasFailure = true;
-                 failedAgents.push(r.agent);
-            }
-        });
-
-        detailsWrapper.querySelector('.agent-work-summary').innerText = `Individual Agent Scratchpads (${activeAgents.length} agents)`;
-
-        // Phase 4: Cross-Agent Critique Loop
-        const critiquePromises = activeAgents.map((agentKey, i) => {
-            const peerResult = results[(i + 1) % results.length];
-            const peerContent = (peerResult.result || "").substring(0, 500);
-            return orchestrateHidden(agentKey, [
-                ...thisHistory,
-                { role: 'user', content: `Peer review this answer from ${peerResult.agent}: "${peerContent}". Add anything missing or correct any errors in 2 sentences.` }
-            ]);
-        });
-        const critiques = await Promise.all(critiquePromises);
+    
+    const round1Results = await Promise.all(round1Promises);
+    
+    // Round 2: Sequential Commitment
+    planningStatus.innerText = "Round 2 (Commitment)";
+    planningContent.innerHTML = ""; // Clear for round 2
+    
+    let round1Context = "ROUND 1 PROPOSALS:\\n";
+    round1Results.forEach(r => round1Context += `- ${r.name}: ${r.content}\\n`);
+    
+    for (const agentKey of activeAgents) {
+        const agentName = AGENTS[agentKey].name;
+        const prompt = `MISSION: "${text}".\n\n${round1Context}\n\nBased on the team's proposals, lock in your final role and specific task assignment. If someone else took your target, PIVOT to a new non-overlapping target. Output your final 1-sentence commitment.`;
         
-        critiques.forEach((critiqueResult, i) => {
-            const agentName = AGENTS[activeAgents[i]].name;
-            synthesizerContext += `--- [${agentName} Critique of Peer] ---\n${critiqueResult}\n\n`;
-        });
-
-        // 3. Synthesizer Phase
-        const synthesizerKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
-        const synthesizerMessages = [
-            ...thisHistory,
-            { role: "user", content: "SYSTEM INSTRUCTION: " + synthesizerContext + "\n\nPlease synthesize the above findings into one final, unified response to the user's original request. If the agents had questions for the user, consolidate them into ONE unified question at the end. Do not mention that you are summarizing other agents, just provide the final answer directly as Hermes Orchestrator. ENSURE that you preserve and include clickable markdown links [Title](url) to the sources cited by the agents so the user can click them for more info." }
-        ];
-
-        const finalContentDiv = appendMessage('assistant', '<div class="typing-indicator"><span></span><span></span><span></span></div>', 'Hermes Orchestrator', false, thisContainer);
+        const agentDiv = document.createElement('div');
+        agentDiv.className = 'agent-contribution';
+        agentDiv.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+        planningContent.appendChild(agentDiv);
+        const textDiv = agentDiv.querySelector('.agent-text');
         
-        const synthStart = performance.now();
-        const finalResult = await streamChat(synthesizerKey, synthesizerMessages, (text) => {
-            finalContentDiv.innerHTML = marked.parse(text);
+        const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
+            textDiv.innerHTML = marked.parse(chunk);
             thisContainer.scrollTop = thisContainer.scrollHeight;
         }, thisContainer);
-        const latency_ms = performance.now() - synthStart;
-        const token_count = Math.round((finalResult.content || '').length / 4);
-
-        if (finalResult.type === 'text') {
-            let staticScratchpadHtml = `<div class="agent-work-content">`;
-            results.forEach(r => {
-                staticScratchpadHtml += `
-                    <div class="individual-agent-block">
-                        <div class="individual-agent-name">${r.agent}</div>
-                        <div class="individual-agent-text">${marked.parse(r.result)}</div>
-                    </div>
-                `;
+        
+        missionState.planningBoard.finalAssignments[agentKey] = result.content;
+    }
+    
+    planningStatus.innerText = "Locked";
+    planningStatus.style.animation = "none";
+    planningStatus.style.color = "#10b981";
+    
+    // ==========================================
+    // PHASE 2: EVIDENCE RETRIEVAL
+    // ==========================================
+    const findingsBoard = document.getElementById(`findings-board-${thisSessionId}`);
+    const findingsContent = findingsBoard.querySelector('.board-content');
+    findingsBoard.style.display = 'flex';
+    missionState.status = "retrieval";
+    
+    let teamPlanContext = "TEAM PLAN LOCK:\\n";
+    activeAgents.forEach(k => teamPlanContext += `- ${AGENTS[k].name}: ${missionState.planningBoard.finalAssignments[k]}\\n`);
+    
+    thisHistory.push({ role: 'system', content: teamPlanContext });
+    
+    const retrievalPromises = [];
+    const TARGET_CONCURRENCY = 6;
+    const subagentsPerBox = Math.ceil(TARGET_CONCURRENCY / activeAgents.length);
+    
+    for (const agentKey of activeAgents) {
+        for (let i = 1; i <= subagentsPerBox; i++) {
+            const agentName = AGENTS[agentKey].name;
+            const subAgentName = `${agentName} (Thread ${i})`;
+            const prompt = `Execute your locked task. **CRITICAL: You MUST use your native browser or search tools to fetch live data.** Do NOT hallucinate URLs or facts. Focus specifically on angle/sub-aspect ${i} of your strategy. If a tool fails, report 'TASK FAILED'. Output your findings strictly tagged with [CLAIM] your finding [/CLAIM] and [SOURCE] your source URL [/SOURCE].`;
+            
+            const cardDiv = document.createElement('div');
+            cardDiv.className = 'finding-card';
+            cardDiv.innerHTML = `<div class="finding-source">${subAgentName}</div><div class="finding-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+            findingsContent.appendChild(cardDiv);
+            const textDiv = cardDiv.querySelector('.finding-text');
+            
+            const p = streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
+                textDiv.innerHTML = marked.parse(chunk);
+                thisContainer.scrollTop = thisContainer.scrollHeight;
+            }, thisContainer).then(result => {
+                missionState.findingsBoard.push({ agent: subAgentName, content: result.content || result.error });
+                return { agent: subAgentName, result: result.content, error: result.error };
             });
-            staticScratchpadHtml += `</div>`;
             
-            const detailsHtml = `
-                <div class="agent-work-details">
-                    <div class="agent-work-summary" style="font-weight: bold; margin-bottom: 8px;">Individual Agent Scratchpads (${activeAgents.length} agents)</div>
-                    ${staticScratchpadHtml}
-                </div>
-            `;
-            
-            thisHistory.push({ 
-                role: "assistant", 
-                content: finalResult.content + "\n\n[Scratchpad Data Omitted from LLM Context]",
-                displayContent: marked.parse(finalResult.content) + "\n\n" + detailsHtml
-            });
-            saveSession(thisSessionId, thisHistory);
-            if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
-            
-            const successRate = finalResult.content && finalResult.content.includes('TASK FAILED') ? 0.2 : 1.0;
-            fetch('http://localhost:3000/api/evals/submit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    x: activeArchetype.x,
-                    y: activeArchetype.y,
-                    success_rate: successRate,
-                    tokens: token_count,
-                    latency: latency_ms
-                })
-            }).catch(e => console.error("Auto-eval failed:", e));
-            
-            autoResearchTask(finalResult.content || '');
-        } else if (finalResult.type === 'error') {
-            finalContentDiv.innerHTML = `<span style="color: #ef4444;">Error during synthesis: ${finalResult.error}</span>`;
-            thisHistory.push({ role: "assistant", content: `Error during synthesis: ${finalResult.error}` });
-            saveSession(thisSessionId, thisHistory);
-            if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
+            retrievalPromises.push(p);
         }
+    }
+    
+    const retrievalResults = await Promise.all(retrievalPromises);
+    findingsBoard.querySelector('.board-status').innerText = "Complete";
+    findingsBoard.querySelector('.board-status').style.animation = "none";
+    findingsBoard.querySelector('.board-status').style.color = "#10b981";
+    
+    // ==========================================
+    // PHASE 3: MID-MISSION CHECKPOINT
+    // ==========================================
+    const checkpointBoard = document.getElementById(`checkpoint-board-${thisSessionId}`);
+    const checkpointContent = checkpointBoard.querySelector('.board-content');
+    checkpointBoard.style.display = 'flex';
+    missionState.status = "checkpoint";
+    
+    let findingsContext = "EVIDENCE FOUND:\\n";
+    retrievalResults.forEach(r => findingsContext += `[${r.agent}]: ${r.result}\\n`);
+    thisHistory.push({ role: 'system', content: findingsContext });
+    
+    // Sequential Checkpoint evaluation
+    let conflictResolutionTriggered = false;
+    let checkpointRounds = 1;
+    
+    const evaluatorKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
+    const evaluatorName = AGENTS[evaluatorKey].name;
+    
+    const cpDiv = document.createElement('div');
+    cpDiv.className = 'agent-contribution';
+    cpDiv.innerHTML = `<div class="agent-role">${evaluatorName} (Evaluator)</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+    checkpointContent.appendChild(cpDiv);
+    const cpTextDiv = cpDiv.querySelector('.agent-text');
+    
+    const cpPrompt = `Review the EVIDENCE FOUND. Identify: 1. Conflicting claims. 2. Missing evidence required to fully answer the user's request. Output CONSENSUS: TRUE if we have enough verified data to proceed to final synthesis. Output CONSENSUS: FALSE and list the missing evidence if we need another retrieval pass.`;
+    
+    const cpResult = await streamChat(evaluatorKey, [...thisHistory, { role: 'user', content: cpPrompt }], (chunk) => {
+        cpTextDiv.innerHTML = marked.parse(chunk);
+        thisContainer.scrollTop = thisContainer.scrollHeight;
+    }, thisContainer);
+    
+    const cpContent = cpResult.content || "";
+    missionState.checkpointBoard.analysis = cpContent;
+    
+    if (cpContent.includes('CONSENSUS: FALSE')) {
+        conflictResolutionTriggered = true;
+        checkpointRounds++;
+        
+        const decDiv = document.createElement('div');
+        decDiv.className = 'checkpoint-decision consensus-false';
+        decDiv.innerText = 'CONSENSUS: FALSE - Triggering Follow-up Pass';
+        checkpointContent.appendChild(decDiv);
+        
+        thisHistory.push({ role: 'system', content: `CHECKPOINT FAILED: ${cpContent}\n\nPlease perform a targeted follow-up retrieval to resolve the gaps/conflicts.` });
+        
+        const followUpPromises = activeAgents.map(async (agentKey) => {
+            const agentName = AGENTS[agentKey].name;
+            const cardDiv = document.createElement('div');
+            cardDiv.className = 'finding-card';
+            cardDiv.style.border = '1px solid rgba(245, 158, 11, 0.4)';
+            cardDiv.innerHTML = `<div class="finding-source">${agentName} (Follow-up)</div><div class="finding-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+            findingsContent.appendChild(cardDiv);
+            
+            const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: 'Execute follow-up retrieval to resolve the checkpoint gaps.' }], (chunk) => {
+                cardDiv.querySelector('.finding-text').innerHTML = marked.parse(chunk);
+                thisContainer.scrollTop = thisContainer.scrollHeight;
+            }, thisContainer);
+            
+            missionState.findingsBoard.push({ agent: agentName + ' (Follow-up)', content: result.content });
+            return result.content;
+        });
+        
+        await Promise.all(followUpPromises);
+    } else {
+        const decDiv = document.createElement('div');
+        decDiv.className = 'checkpoint-decision consensus-true';
+        decDiv.innerText = 'CONSENSUS: TRUE - Proceeding to Synthesis';
+        checkpointContent.appendChild(decDiv);
+    }
+    
+    checkpointBoard.querySelector('.board-status').innerText = "Locked";
+    checkpointBoard.querySelector('.board-status').style.animation = "none";
+    checkpointBoard.querySelector('.board-status').style.color = "#10b981";
+    
+    // ==========================================
+    // PHASE 4: FINAL SYNTHESIS
+    // ==========================================
+    missionState.status = "synthesis";
+    const synthStart = performance.now();
+    const finalContentDiv = appendMessage('assistant', '<div class="typing-indicator"><span></span><span></span><span></span></div>', 'Hermes Orchestrator (Synthesis)', false, thisContainer);
+    
+    let fullFindings = "";
+    missionState.findingsBoard.forEach(f => fullFindings += `[${f.agent}]: ${f.content}\\n`);
+    
+    const synthMessages = [...thisHistory, { 
+        role: "user", 
+        content: `SYSTEM INSTRUCTION: You are the final Synthesist. Draft the final response to the user's original request using ONLY the verified data from the findings board:\n${fullFindings}\n\nENSURE you preserve and include clickable markdown links [Title](url).`
+    }];
+    
+    const finalResult = await streamChat(evaluatorKey, synthMessages, (chunk) => {
+        finalContentDiv.innerHTML = marked.parse(chunk);
+        thisContainer.scrollTop = thisContainer.scrollHeight;
+    }, thisContainer);
+    
+    const latency_ms = performance.now() - synthStart;
+    const token_count = Math.round((finalResult.content || '').length / 4);
+    
+    thisHistory.push({ role: "assistant", content: finalResult.content });
+    missionState.status = "complete";
+    saveSession(thisSessionId, thisHistory, missionState);
+    if (currentSessionId === thisSessionId) {
+        globalHistory = [...thisHistory];
+        globalMissionStates[thisSessionId] = missionState;
+    }
+    
+    const successRate = finalResult.content && finalResult.content.includes('TASK FAILED') ? 0.2 : 1.0;
+    fetch('http://localhost:3000/api/evals/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            x: activeArchetype.x,
+            y: activeArchetype.y,
+            success_rate: successRate,
+            tokens: token_count,
+            latency: latency_ms,
+            collaboration_rounds: checkpointRounds,
+            conflict_resolution: conflictResolutionTriggered
+        })
+    }).catch(e => console.error("Auto-eval failed:", e));
+    
+    autoResearchTask(finalResult.content || '');
 
-        if (hasFailure && activeAgents.length > 1) {
-            appendMessage('system', `<div class="typing-indicator" style="display:inline-block; margin-right: 10px;"><span></span><span></span><span></span></div> <i>Failure detected from ${failedAgents.join(', ')}. Initiating Recovery Phase...</i>`, 'System', true, thisContainer);
-            
-            thisHistory.push({ role: "user", content: "SYSTEM ALERT: One or more agents encountered a failure. Can another agent try a different approach to solve the user's request?" });
-            saveSession(thisSessionId, thisHistory);
-            if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
-            
-            const recoveryResults = await Promise.all(activeAgents.map(ak => orchestrateHidden(ak, [...thisHistory], thisContainer)));
-            
-            let recoveryCombined = "";
-            recoveryResults.forEach((res, i) => {
-                recoveryCombined += `[${AGENTS[activeAgents[i]].name}]: ${res}\n`;
-            });
-            thisHistory.push({ role: "assistant", content: recoveryCombined });
-            saveSession(thisSessionId, thisHistory);
-            if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
-            
-            appendMessage('assistant', recoveryCombined, 'Hermes Orchestrator (Recovery)', false, thisContainer);
-        }
-
-        processingSessions[thisSessionId] = false;
-        if (currentSessionId === thisSessionId) {
-            sendBtn.disabled = false;
-            messageInput.focus();
-        }
-    });
+    processingSessions[thisSessionId] = false;
+    if (currentSessionId === thisSessionId) {
+        sendBtn.disabled = false;
+        messageInput.focus();
+    }
 });
 
 function setAgentStatus(agentKey, state, isThinking) {
