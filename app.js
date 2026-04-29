@@ -311,7 +311,12 @@ function deleteSession(id, event) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
     
     if (currentSessionId === id) {
-        startNewChat();
+        if (sessions.length > 0) {
+            loadSession(sessions[0].id);
+        } else {
+            currentSessionId = null;
+            startNewChat();
+        }
     } else {
         loadSessionsFromStorage();
     }
@@ -502,6 +507,9 @@ function loadSession(id) {
 }
 
 function startNewChat() {
+    if (globalHistory.length <= 1 && currentSessionId) {
+        return; // Already on an empty new chat
+    }
     currentSessionId = generateId();
     switchChatContainer(currentSessionId);
     globalHistory = [DEFAULT_SYSTEM_PROMPT];
@@ -1242,7 +1250,6 @@ async function orchestrate(agentKey, messages) {
     if (result.type === 'text') {
         return result.content;
     }
-}
 }
 
 // ----------------------------------------------------

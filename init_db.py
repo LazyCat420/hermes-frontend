@@ -74,6 +74,20 @@ def init_db():
         );
         """)
 
+        print("Creating llm_audit_logs table...")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS llm_audit_logs (
+            id SERIAL PRIMARY KEY,
+            agent_name VARCHAR(100),
+            prompt_context TEXT,
+            raw_response TEXT,
+            parsed_json JSONB,
+            execution_time_ms INTEGER,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+
         # Seeding baseline archetypes
         print("Seeding baseline MAP-Elites archetypes...")
         

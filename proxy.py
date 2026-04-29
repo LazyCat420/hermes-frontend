@@ -4,6 +4,11 @@ import urllib.request
 import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import structlog
+from tenacity import retry, stop_after_attempt, wait_fixed
+import time
+
+log = structlog.get_logger()
 
 DB_URL = "postgresql://admin:password@10.0.0.16:5431/hermes_general_bots"
 
@@ -171,15 +176,23 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
             req.add_header('Content-Type', 'application/json')
             req.add_header('Authorization', self.headers.get('Authorization', 'Bearer change-me-local-dev'))
 
+            start_time = time.time()
+            prompt_data = json.loads(body) if body else {}
+            
+            log.info("llm_request_started", target=target_url, model=prompt_data.get('model'))
+
+            @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+            def get_response():
+                return urllib.request.urlopen(req, timeout=30)
+
             try:
-                with urllib.request.urlopen(req) as response:
+                with get_response() as response:
                     self.send_response(response.status)
                     self.send_header('Content-Type', 'text/event-stream')
                     self.send_header('Cache-Control', 'no-cache')
                     self.end_headers()
                     
                     import threading
-                    import time
                     is_done = [False]
                     
                     def heartbeat_loop():
@@ -195,6 +208,7 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
                     t = threading.Thread(target=heartbeat_loop, daemon=True)
                     t.start()
                     
+                    accumulated_content = ""
                     try:
                         while True:
                             line = response.readline()
@@ -202,13 +216,50 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
                                 break
                             self.wfile.write(line)
                             self.wfile.flush()
-                            if line.strip() == b"data: [DONE]":
+                            
+                            decoded = line.decode('utf-8', errors='ignore').strip()
+                            if decoded.startswith("data: ") and decoded != "data: [DONE]":
+                                try:
+                                    chunk = json.loads(decoded[6:])
+                                    if "choices" in chunk and len(chunk["choices"]) > 0:
+                                        delta = chunk["choices"][0].get("delta", {})
+                                        if "content" in delta:
+                                            accumulated_content += delta["content"]
+                                except Exception:
+                                    pass
+                                    
+                            if decoded == "data: [DONE]":
                                 break
                     finally:
                         is_done[0] = True
+                        
+                        # Log to database
+                        exec_time = int((time.time() - start_time) * 1000)
+                        log.info("llm_request_completed", target=target_url, exec_time_ms=exec_time)
+                        
+                        try:
+                            agent_name = "unknown"
+                            for key, val in TARGETS.items():
+                                if val == target_url:
+                                    agent_name = key.split('/')[2]
+                                    break
+                            
+                            conn = psycopg2.connect(DB_URL)
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                INSERT INTO llm_audit_logs 
+                                (agent_name, prompt_context, raw_response, execution_time_ms)
+                                VALUES (%s, %s, %s, %s)
+                            """, (agent_name, json.dumps(prompt_data), accumulated_content, exec_time))
+                            conn.commit()
+                            conn.close()
+                        except Exception as db_e:
+                            log.error("audit_log_failed", error=str(db_e))
+                            
             except (ConnectionAbortedError, BrokenPipeError):
-                pass
+                log.warning("client_disconnected", target=target_url)
             except Exception as e:
+                log.error("llm_request_failed", error=str(e), target=target_url)
                 try:
                     self.send_response(500)
                     self.end_headers()
@@ -223,9 +274,10 @@ class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     pass
 
-with ThreadingTCPServer(("", PORT), CORSAndProxyHandler) as httpd:
-    print(f"Serving UI at http://localhost:{PORT}")
-    print("Proxying API requests to bypass CORS:")
-    for path, target in TARGETS.items():
-        print(f"  {path} -> {target}")
-    httpd.serve_forever()
+if __name__ == "__main__":
+    with ThreadingTCPServer(("", PORT), CORSAndProxyHandler) as httpd:
+        print(f"Serving UI at http://localhost:{PORT}")
+        print("Proxying API requests to bypass CORS:")
+        for path, target in TARGETS.items():
+            print(f"  {path} -> {target}")
+        httpd.serve_forever()
