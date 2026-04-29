@@ -8,7 +8,21 @@
     <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="app-container">
+    <div class="global-header glass-panel">
+        <div class="logo">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2v20"></path>
+                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+            </svg>
+            HERMES OS
+        </div>
+        <div class="tab-bar">
+            <button class="tab-btn active" id="tabChatBtn">COORDINATOR HUB</button>
+            <button class="tab-btn" id="tabDashBtn">EVOLUTION TRACKING</button>
+        </div>
+    </div>
+
+    <div class="app-container" id="viewChat">
         <!-- Sidebar: Agent Status -->
         <aside class="sidebar glass-panel">
             <h2 class="sidebar-title">AGENT STATUS</h2>
@@ -64,7 +78,16 @@
             <div class="sidebar-footer">
                 <p>Hermes Multi-Agent Orchestrator</p>
                 <p class="subtitle">Direct API Hub</p>
-                <button id="settingsBtn" class="retro-btn" style="margin-top: 16px; width: 100%; font-size: 0.9rem;" title="Open Settings">
+                <button id="evoGridBtn" class="retro-btn" style="margin-top: 16px; width: 100%; font-size: 0.9rem; border-color: rgba(245, 158, 11, 0.8); color: #fbbf24;" title="View Evolutionary Strategy Grid">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="14" width="7" height="7"></rect>
+                        <rect x="3" y="14" width="7" height="7"></rect>
+                    </svg>
+                    EVO GRID MAP
+                </button>
+                <button id="settingsBtn" class="retro-btn" style="margin-top: 8px; width: 100%; font-size: 0.9rem;" title="Open Settings">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="12" cy="12" r="3"></circle>
                         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -123,6 +146,51 @@
             </div>
         </aside>
     </div>
+
+    <!-- Dashboard View -->
+    <div class="app-container dashboard-container" id="viewDashboard" style="display: none;">
+        <div class="dashboard-sidebar glass-panel">
+            <h2 class="sidebar-title">TRACKING MENU</h2>
+            <div class="sidebar-footer" style="margin-top: 16px;">
+                <p class="subtitle">Select a metric stream to monitor below.</p>
+                <button id="syncDbBtn" class="retro-btn" style="margin-top: 16px; width: 100%; font-size: 0.9rem;" title="Force Sync Database">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"></polyline>
+                        <polyline points="1 20 1 14 7 14"></polyline>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                    </svg>
+                    SYNC DB
+                </button>
+            </div>
+        </div>
+
+        <div class="dashboard-main">
+            <!-- Panels -->
+            <div class="dashboard-panel glass-panel" id="panelAutoResearch">
+                <h2 class="sidebar-title" style="color: #fbbf24;">AUTO-RESEARCH LOGS</h2>
+                <div class="panel-content">
+                    <div class="system-message" style="margin-top: 20px;">[ Awaiting simulation data from hermes_general_bots... ]</div>
+                </div>
+            </div>
+
+            <div class="dashboard-panel glass-panel" id="panelEvals">
+                <h2 class="sidebar-title" style="color: #3b82f6;">DEEPEVAL SCORES</h2>
+                <div class="panel-content">
+                    <div class="system-message" style="margin-top: 20px;">[ No evaluation runs detected. ]</div>
+                </div>
+            </div>
+
+            <div class="dashboard-panel glass-panel" id="panelEvolution" style="grid-column: span 2;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2 class="sidebar-title" style="color: #10b981;">EVOLUTION & MUTATION STREAM</h2>
+                    <button id="triggerMutateBtn" class="retro-btn" style="font-size: 0.7rem; padding: 4px 8px;">TRIGGER MUTATION</button>
+                </div>
+                <div class="panel-content">
+                    <div class="system-message" style="margin-top: 20px;">[ Awaiting new generations from evolution_router... ]</div>
+                </div>
+            </div>
+        </div>
+    </div>
     
     <!-- Settings Modal -->
     <div id="settingsModal" class="modal-overlay" style="display: none;">
@@ -147,6 +215,34 @@
             <div style="display: flex; gap: 12px; margin-top: 24px;">
                 <button id="saveThemeBtn" class="retro-btn" style="flex: 1;">APPLY THEME</button>
                 <button id="closeSettingsBtn" class="retro-btn" style="flex: 1; border-color: rgba(255, 50, 50, 0.5); color: #ff3333;">CANCEL</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- EvoGrid Modal -->
+    <div id="evoGridModal" class="modal-overlay" style="display: none;">
+        <div class="modal-content glass-panel evo-grid-modal">
+            <h2 class="sidebar-title" style="font-size: 1.5rem; margin-bottom: 10px; color: #fbbf24;">MAP-ELITES ARCHETYPE GRID</h2>
+            <p class="subtitle" style="margin-bottom: 20px;">Evolutionary routing space for autonomous multi-agent behavior generation.</p>
+            
+            <div class="evo-grid-container">
+                <!-- Y-Axis Label -->
+                <div class="evo-axis-y">Exploration vs Exploitation (Novelty)</div>
+                
+                <div class="evo-grid-core" id="evoGridCore">
+                    <!-- Grid dynamically generated by JS -->
+                </div>
+            </div>
+
+            <!-- X-Axis Label -->
+            <div class="evo-axis-x">Temporal Horizon (Short-term Reactivity vs Long-term Planning)</div>
+            
+            <div class="evo-archetype-details" id="evoArchetypeDetails">
+                <h3>Select a node to view archetype genetics.</h3>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
+                <button id="closeEvoGridBtn" class="retro-btn" style="width: 120px;">CLOSE</button>
             </div>
         </div>
     </div>

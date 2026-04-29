@@ -135,7 +135,11 @@ function renderHistory() {
         if (msg.role === 'user') senderName = 'You';
         if (msg.role === 'assistant') senderName = 'Hermes Orchestrator';
         
-        appendMessage(msg.role, msg.content, senderName);
+        if (msg.displayContent) {
+            appendMessage(msg.role, msg.displayContent, senderName, true);
+        } else {
+            appendMessage(msg.role, msg.content, senderName, false);
+        }
     });
     chatHistory.scrollTop = chatHistory.scrollHeight;
 }
@@ -188,10 +192,14 @@ chatForm.addEventListener('submit', async (e) => {
 
     const activeAgents = getActiveAgents();
 
-    const huddleContainer = appendMessage('system', '<strong>STRATEGY HUDDLE IN PROGRESS...</strong><div id="huddle-blocks" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;"></div>', 'System');
+    const huddleContainer = appendMessage('system', '<strong>STRATEGY HUDDLE IN PROGRESS...</strong><div id="huddle-blocks" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;"></div>', 'System', true);
     const huddleBlocks = huddleContainer.querySelector('#huddle-blocks');
 
-    const huddlePromises = activeAgents.map(async (agentKey) => {
+    let currentHuddleContext = "";
+    const strategies = [];
+
+    // Sequential Huddle so agents can read previous proposals and avoid overlap
+    for (const agentKey of activeAgents) {
         const agentName = AGENTS[agentKey].name;
         
         const agentBlock = document.createElement('div');
@@ -204,9 +212,15 @@ chatForm.addEventListener('submit', async (e) => {
         huddleBlocks.appendChild(agentBlock);
         const textDiv = agentBlock.querySelector('.huddle-text');
 
+        let contextPrompt = `SYSTEM HUDDLE: You are ${agentName}. Before executing any tools, propose a brief 1-sentence strategy for how you will help answer the user's latest request. Do NOT execute tools yet. Just state your plan.`;
+        
+        if (currentHuddleContext !== "") {
+            contextPrompt = `SYSTEM HUDDLE: You are ${agentName}. Here is what the other agents have proposed so far:\n${currentHuddleContext}\n\nPlease propose a brief 1-sentence strategy for how YOU will help answer the user's request. **CRITICAL: You must choose a DIFFERENT, non-overlapping approach or target different data sources from the agents above.** Do NOT execute tools yet. Just state your plan.`;
+        }
+        
         const huddleMessages = [...globalHistory, {
             role: "user", 
-            content: "SYSTEM HUDDLE: Before executing any tools, propose a brief 1-sentence strategy for how you will help answer the user's latest request. Do NOT execute tools yet. Just state your plan."
+            content: contextPrompt
         }];
         
         const result = await streamChat(agentKey, huddleMessages, (text) => {
@@ -214,29 +228,41 @@ chatForm.addEventListener('submit', async (e) => {
             chatHistory.scrollTop = chatHistory.scrollHeight;
         });
         
-        return { agent: agentName, strategy: result.content || result.error };
-    });
-
-    const strategies = await Promise.all(huddlePromises);
+        const finalStrategy = result.content || result.error;
+        strategies.push({ agent: agentName, strategy: finalStrategy });
+        currentHuddleContext += `- ${agentName}: ${finalStrategy}\n`;
+    }
 
     let huddleSummary = "**STRATEGY HUDDLE COMPLETE:**\n\n";
+    let staticHuddleHtml = `<strong>STRATEGY HUDDLE COMPLETE</strong><div id="huddle-blocks" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">`;
     strategies.forEach(s => {
         huddleSummary += `- **${s.agent}**: ${s.strategy}\n`;
+        staticHuddleHtml += `
+            <div style="background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px; border-left: 3px solid var(--text-secondary);">
+                <div style="font-size: 0.8rem; font-weight: bold; margin-bottom: 4px; color: var(--text-primary); text-transform: uppercase;">${s.agent}</div>
+                <div class="huddle-text" style="font-size: 0.9rem;">${marked.parse(s.strategy)}</div>
+            </div>
+        `;
     });
+    staticHuddleHtml += `</div>`;
     
     // We already have the live rendering, so we just update the global history silently
-    globalHistory.push({ role: "system", content: huddleSummary + "\nNow, execute your part of the strategy using your native tools to fulfill the user's original request." });
+    globalHistory.push({ 
+        role: "system", 
+        content: huddleSummary + "\nNow, execute YOUR SPECIFIC PART of the strategy using your native tools to fulfill the user's original request. DO NOT duplicate the work of the other agents.",
+        displayContent: staticHuddleHtml
+    });
     saveCurrentSession();
 
     // 2. Real-time Scratchpad / Execution Phase
     const detailsWrapper = document.createElement('div');
     detailsWrapper.innerHTML = `
-        <details class="agent-work-details" open>
-            <summary class="agent-work-summary">Live Agent Scratchpads (${activeAgents.length} agents)</summary>
+        <div class="agent-work-details">
+            <div class="agent-work-summary" style="font-weight: bold; margin-bottom: 8px;">Live Agent Scratchpads (${activeAgents.length} agents)</div>
             <div class="agent-work-content" id="live-scratchpads"></div>
-        </details>
+        </div>
     `;
-    const scratchpadMsgDiv = appendMessage('system', '', 'Execution Phase');
+    const scratchpadMsgDiv = appendMessage('system', '', 'Execution Phase', true);
     scratchpadMsgDiv.innerHTML = '';
     scratchpadMsgDiv.appendChild(detailsWrapper);
     
@@ -279,9 +305,8 @@ chatForm.addEventListener('submit', async (e) => {
             }
         });
 
-        // Close the details block after execution finishes to keep UI clean
-        detailsWrapper.querySelector('details').removeAttribute('open');
-        detailsWrapper.querySelector('.agent-work-summary').innerText = `View Individual Agent Scratchpads (${activeAgents.length} agents)`;
+        // Update the header after execution finishes
+        detailsWrapper.querySelector('.agent-work-summary').innerText = `Individual Agent Scratchpads (${activeAgents.length} agents)`;
 
         // 3. Synthesizer Phase
         const synthesizerKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
@@ -311,13 +336,18 @@ chatForm.addEventListener('submit', async (e) => {
             staticScratchpadHtml += `</div>`;
             
             const detailsHtml = `
-                <details class="agent-work-details">
-                    <summary class="agent-work-summary">View Individual Agent Scratchpads (${activeAgents.length} agents)</summary>
+                <div class="agent-work-details">
+                    <div class="agent-work-summary" style="font-weight: bold; margin-bottom: 8px;">Individual Agent Scratchpads (${activeAgents.length} agents)</div>
                     ${staticScratchpadHtml}
-                </details>
+                </div>
             `;
             
-            globalHistory.push({ role: "assistant", content: finalResult.content + "\n\n" + detailsHtml });
+            // We append the scratchpad to the final system message in the UI so the user always sees it
+            globalHistory.push({ 
+                role: "assistant", 
+                content: finalResult.content + "\n\n" + `[Scratchpad Data Omitted from LLM Context]`,
+                displayContent: marked.parse(finalResult.content) + "\n\n" + detailsHtml
+            });
             saveCurrentSession();
         } else if (finalResult.type === 'error') {
             finalContentDiv.innerHTML = `<span style="color: #ef4444;">Error during synthesis: ${finalResult.error}</span>`;
@@ -366,7 +396,7 @@ function setAgentStatus(agentKey, state, isThinking) {
     }
 }
 
-function appendMessage(role, content, senderName = '') {
+function appendMessage(role, content, senderName = '', isHtml = false) {
     const div = document.createElement('div');
     div.className = `message ${role}`;
     
@@ -376,7 +406,7 @@ function appendMessage(role, content, senderName = '') {
     
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
-    contentDiv.innerHTML = marked.parse(content || '');
+    contentDiv.innerHTML = isHtml ? content : marked.parse(content || '');
 
     div.appendChild(nameDiv);
     div.appendChild(contentDiv);
@@ -607,3 +637,198 @@ if (saveThemeBtn) {
 document.addEventListener('DOMContentLoaded', () => {
     loadTheme();
 });
+
+// ----------------------------------------------------
+// MAP-Elites EvoGrid Logic
+// ----------------------------------------------------
+const evoGridBtn = document.getElementById('evoGridBtn');
+const evoGridModal = document.getElementById('evoGridModal');
+const closeEvoGridBtn = document.getElementById('closeEvoGridBtn');
+const evoGridCore = document.getElementById('evoGridCore');
+const evoArchetypeDetails = document.getElementById('evoArchetypeDetails');
+
+const archetypes = [
+    { x: 0, y: 0, label: "Static Recall", elite: false, score: 0.42, genetics: { memory: "8k", temp: 0.1, top_p: 0.9, tools: "strict" } },
+    { x: 4, y: 4, label: "Chaotic Oracle", elite: true, score: 0.91, genetics: { memory: "128k", temp: 0.9, top_p: 0.95, tools: "exploratory" } },
+    { x: 2, y: 2, label: "Balanced Guide", elite: true, score: 0.85, genetics: { memory: "32k", temp: 0.5, top_p: 0.9, tools: "adaptive" } },
+    { x: 0, y: 4, label: "Rapid Innovator", elite: false, score: 0.65, genetics: { memory: "8k", temp: 0.8, top_p: 0.9, tools: "exploratory" } },
+    { x: 4, y: 0, label: "Deep Archivist", elite: true, score: 0.88, genetics: { memory: "128k", temp: 0.2, top_p: 0.9, tools: "strict" } },
+    { x: 1, y: 1, label: "Cautious Assistant", elite: false, score: 0.55, genetics: { memory: "16k", temp: 0.3, top_p: 0.9, tools: "strict" } },
+    { x: 3, y: 3, label: "Creative Partner", elite: true, score: 0.82, genetics: { memory: "64k", temp: 0.7, top_p: 0.9, tools: "adaptive" } }
+];
+
+function renderEvoGrid() {
+    if (!evoGridCore) return;
+    evoGridCore.innerHTML = '';
+    
+    // Y runs from 4 to 0 so 0 is at the bottom visually like a graph
+    for (let y = 4; y >= 0; y--) {
+        for (let x = 0; x < 5; x++) {
+            const node = document.createElement('div');
+            node.className = 'evo-node';
+            
+            // Find archetype
+            const arch = archetypes.find(a => a.x === x && a.y === y);
+            
+            if (arch) {
+                if (arch.elite) node.classList.add('elite');
+                node.innerHTML = `
+                    <div class="node-label">${arch.label}</div>
+                    <div class="node-score">${arch.score.toFixed(2)}</div>
+                `;
+                
+                node.addEventListener('click', () => {
+                    document.querySelectorAll('.evo-node').forEach(n => n.classList.remove('active'));
+                    node.classList.add('active');
+                    
+                    evoArchetypeDetails.innerHTML = `
+                        <h3>Archetype: ${arch.label} ${arch.elite ? '⭐ (Elite)' : ''}</h3>
+                        <p>Performance Score: ${arch.score.toFixed(2)}</p>
+                        <div class="genetics">
+                            <div class="genetic-trait">Context: ${arch.genetics.memory}</div>
+                            <div class="genetic-trait">Temp: ${arch.genetics.temp}</div>
+                            <div class="genetic-trait">Top P: ${arch.genetics.top_p}</div>
+                            <div class="genetic-trait">Tools: ${arch.genetics.tools}</div>
+                        </div>
+                    `;
+                });
+            } else {
+                node.innerHTML = `<div style="opacity: 0.2;">Empty</div>`;
+                node.addEventListener('click', () => {
+                    document.querySelectorAll('.evo-node').forEach(n => n.classList.remove('active'));
+                    node.classList.add('active');
+                    evoArchetypeDetails.innerHTML = `
+                        <h3>Unexplored Niche</h3>
+                        <p>This intersection of Temporal Horizon and Exploration has not yet evolved a stable archetype.</p>
+                    `;
+                });
+            }
+            
+            evoGridCore.appendChild(node);
+        }
+    }
+}
+
+if (evoGridBtn) {
+    evoGridBtn.addEventListener('click', () => {
+        evoGridModal.style.display = 'flex';
+        renderEvoGrid();
+    });
+}
+
+if (closeEvoGridBtn) {
+    closeEvoGridBtn.addEventListener('click', () => {
+        evoGridModal.style.display = 'none';
+    });
+}
+
+// ----------------------------------------------------
+// Tab Navigation Logic
+// ----------------------------------------------------
+const tabChatBtn = document.getElementById('tabChatBtn');
+const tabDashBtn = document.getElementById('tabDashBtn');
+const viewChat = document.getElementById('viewChat');
+const viewDashboard = document.getElementById('viewDashboard');
+const syncDbBtn = document.getElementById('syncDbBtn');
+let pollingInterval = null;
+
+async function fetchDashboardData(endpoint, containerId) {
+    const container = document.querySelector(`#${containerId} .panel-content`);
+    if (!container) return;
+    
+    try {
+        const response = await fetch(`http://localhost:3000${endpoint}`);
+        const result = await response.json();
+        
+        if (result.status === 'table_missing') {
+            container.innerHTML = `<div class="system-message" style="margin-top: 20px;">[ Database connected, but table not found. Awaiting initialization from backend. ]</div>`;
+            return;
+        }
+        
+        if (result.status === 'error') {
+            container.innerHTML = `<div class="system-message" style="margin-top: 20px; color: #ef4444;">[ Error: ${result.error} ]</div>`;
+            return;
+        }
+        
+        if (!result.data || result.data.length === 0) {
+            container.innerHTML = `<div class="system-message" style="margin-top: 20px;">[ Table exists, but no data records found yet. ]</div>`;
+            return;
+        }
+        
+        let html = '<div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">';
+        result.data.forEach((row, idx) => {
+            html += `<div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; border-left: 2px solid var(--accent-blue);">
+                <div style="font-size: 0.7rem; color: var(--text-secondary); margin-bottom: 4px;">Record #${idx + 1}</div>
+                <pre style="margin: 0; padding: 0; background: transparent; font-size: 0.8rem; overflow-x: hidden; white-space: pre-wrap;">${JSON.stringify(row, null, 2)}</pre>
+            </div>`;
+        });
+        html += '</div>';
+        
+        container.innerHTML = html;
+        
+    } catch (e) {
+        container.innerHTML = `<div class="system-message" style="margin-top: 20px; color: #ef4444;">[ Connection failed. Is proxy.py running? ]</div>`;
+    }
+}
+
+async function syncDashboard() {
+    if (syncDbBtn) syncDbBtn.style.opacity = '0.5';
+    
+    await Promise.all([
+        fetchDashboardData('/api/dashboard/research', 'panelAutoResearch'),
+        fetchDashboardData('/api/dashboard/evals', 'panelEvals'),
+        fetchDashboardData('/api/dashboard/evolution', 'panelEvolution')
+    ]);
+    
+    if (syncDbBtn) syncDbBtn.style.opacity = '1';
+}
+
+if (syncDbBtn) {
+    syncDbBtn.addEventListener('click', syncDashboard);
+}
+
+const triggerMutateBtn = document.getElementById('triggerMutateBtn');
+if (triggerMutateBtn) {
+    triggerMutateBtn.addEventListener('click', async () => {
+        triggerMutateBtn.innerText = 'MUTATING...';
+        triggerMutateBtn.style.opacity = '0.5';
+        try {
+            // Pick a random spot for the new mutation to land (0-4)
+            const rx = Math.floor(Math.random() * 5);
+            const ry = Math.floor(Math.random() * 5);
+            await fetch('http://localhost:3000/api/evolution/mutate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ x: rx, y: ry })
+            });
+            await syncDashboard(); // Force refresh
+            if (typeof renderEvoGrid === 'function') renderEvoGrid(); // Update the 5x5 modal too if open
+        } catch (e) {
+            console.error('Mutation failed:', e);
+        }
+        triggerMutateBtn.innerText = 'TRIGGER MUTATION';
+        triggerMutateBtn.style.opacity = '1';
+    });
+}
+
+if (tabChatBtn && tabDashBtn) {
+    tabChatBtn.addEventListener('click', () => {
+        tabChatBtn.classList.add('active');
+        tabDashBtn.classList.remove('active');
+        viewChat.style.display = 'flex';
+        viewDashboard.style.display = 'none';
+        if (chatHistory) chatHistory.scrollTop = chatHistory.scrollHeight;
+        if (pollingInterval) clearInterval(pollingInterval);
+    });
+
+    tabDashBtn.addEventListener('click', () => {
+        tabDashBtn.classList.add('active');
+        tabChatBtn.classList.remove('active');
+        viewDashboard.style.display = 'flex';
+        viewChat.style.display = 'none';
+        
+        syncDashboard();
+        if (pollingInterval) clearInterval(pollingInterval);
+        pollingInterval = setInterval(syncDashboard, 10000);
+    });
+}

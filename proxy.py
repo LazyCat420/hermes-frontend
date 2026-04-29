@@ -2,6 +2,35 @@ import http.server
 import socketserver
 import urllib.request
 import json
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+DB_URL = "postgresql://admin:password@10.0.0.16:5431/hermes_general_bots"
+
+def fetch_db(query):
+    try:
+        conn = psycopg2.connect(DB_URL)
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(query)
+        res = cursor.fetchall()
+        
+        # Convert memoryview/datetime to string for JSON serialization
+        formatted_res = []
+        for row in res:
+            formatted_row = {}
+            for k, v in row.items():
+                if hasattr(v, 'isoformat'):
+                    formatted_row[k] = v.isoformat()
+                else:
+                    formatted_row[k] = v
+            formatted_res.append(formatted_row)
+            
+        conn.close()
+        return {"status": "ok", "data": formatted_res}
+    except psycopg2.errors.UndefinedTable:
+        return {"status": "table_missing", "data": []}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 PORT = 3000
 
@@ -23,7 +52,81 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200, "ok")
         self.end_headers()
 
+    def do_GET(self):
+        if self.path == "/api/dashboard/evals":
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            data = fetch_db("SELECT * FROM deep_evals ORDER BY timestamp DESC LIMIT 10;")
+            self.wfile.write(json.dumps(data).encode())
+            return
+        elif self.path == "/api/dashboard/research":
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            data = fetch_db("SELECT * FROM auto_research_logs ORDER BY timestamp DESC LIMIT 10;")
+            self.wfile.write(json.dumps(data).encode())
+            return
+        elif self.path == "/api/dashboard/evolution":
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            data = fetch_db("SELECT * FROM evolution_grid ORDER BY updated_at DESC LIMIT 10;")
+            self.wfile.write(json.dumps(data).encode())
+            return
+            
+        super().do_GET()
+
     def do_POST(self):
+        if self.path == "/api/evolution/mutate":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length))
+            x = body.get('x', 0)
+            y = body.get('y', 0)
+            
+            try:
+                import evolution_engine
+                res = evolution_engine.mutate_agent(x, y)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps(res).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+            
+        if self.path == "/api/evals/submit":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length))
+            
+            try:
+                import evolution_engine
+                res = evolution_engine.submit_eval(
+                    body.get('x', 0),
+                    body.get('y', 0),
+                    body.get('success_rate', 0.0),
+                    body.get('tokens', 0),
+                    body.get('latency', 0)
+                )
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps(res).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
         if self.path == "/api/tools/search":
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)
@@ -95,6 +198,7 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
 
 class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
     pass
 
 with ThreadingTCPServer(("", PORT), CORSAndProxyHandler) as httpd:
