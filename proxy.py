@@ -10,7 +10,8 @@ import time
 
 log = structlog.get_logger()
 
-DB_URL = "postgresql://admin:password@10.0.0.16:5431/hermes_general_bots"
+import os
+DB_URL = os.getenv("DB_URL", "postgresql://localhost:5432/hermes_general_bots")
 
 def fetch_db(query):
     try:
@@ -37,7 +38,7 @@ def fetch_db(query):
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-PORT = 3000
+PORT = 3005
 
 # Map of local paths to target Hermes endpoints
 TARGETS = {
@@ -183,7 +184,7 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
 
             @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
             def get_response():
-                return urllib.request.urlopen(req, timeout=30)
+                return urllib.request.urlopen(req, timeout=300)
 
             try:
                 with get_response() as response:
@@ -272,12 +273,15 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
 
 class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
-    pass
+    daemon_threads = True
 
 if __name__ == "__main__":
-    with ThreadingTCPServer(("", PORT), CORSAndProxyHandler) as httpd:
-        print(f"Serving UI at http://localhost:{PORT}")
-        print("Proxying API requests to bypass CORS:")
-        for path, target in TARGETS.items():
-            print(f"  {path} -> {target}")
-        httpd.serve_forever()
+    try:
+        with ThreadingTCPServer(("", PORT), CORSAndProxyHandler) as httpd:
+            print(f"Serving UI at http://localhost:{PORT}")
+            print("Proxying API requests to bypass CORS:")
+            for path, target in TARGETS.items():
+                print(f"  {path} -> {target}")
+            httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")

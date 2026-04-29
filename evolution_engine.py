@@ -2,7 +2,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import random
 
-DB_URL = "postgresql://admin:password@10.0.0.16:5431/hermes_general_bots"
+import os
+DB_URL = os.getenv("DB_URL", "postgresql://localhost:5432/hermes_general_bots")
 
 def get_db_connection():
     return psycopg2.connect(DB_URL)

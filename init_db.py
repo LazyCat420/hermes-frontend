@@ -2,7 +2,8 @@ import psycopg2
 import sys
 from datetime import datetime
 
-DB_URL = "postgresql://admin:password@10.0.0.16:5431/hermes_general_bots"
+import os
+DB_URL = os.getenv("DB_URL", "postgresql://localhost:5432/hermes_general_bots")
 
 def init_db():
     try:
