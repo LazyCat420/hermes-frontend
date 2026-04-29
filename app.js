@@ -15,9 +15,233 @@ let globalHistory = [DEFAULT_SYSTEM_PROMPT];
 let currentSessionId = null;
 let processingSessions = {};
 let sessionDOMs = {};
-let globalMissionStates = {}; // sessionId -> missionState
+let globalMissionStates = {}; // sessionId -> RunStore instance
 let activeArchetype = { x: 0, y: 0 };
 let liveArchetypes = [];
+
+class RunStore {
+    constructor(runId, objective) {
+        this.run_id = runId || generateId();
+        this.objective = objective || "";
+        this.events = [];
+        this.listeners = [];
+    }
+
+    on(eventType, cb) {
+        this.listeners.push({ type: eventType, cb: cb });
+    }
+
+    emit(eventType, data) {
+        const ev = {
+            type: eventType,
+            timestamp: Date.now(),
+            data: data
+        };
+        this.events.push(ev);
+        for (const l of this.listeners) {
+            if (l.type === eventType || l.type === '*') {
+                try { l.cb(ev, this); } catch (e) { console.error(e); }
+            }
+        }
+    }
+
+    getState() {
+        let state = {
+            objective: this.objective,
+            status: "planning_round_1",
+            planningBoard: { round1Proposals: {}, finalAssignments: {} },
+            findingsBoard: [],
+            checkpointBoard: { analysis: null, missingEvidence: [], conflicts: [], consensusReached: false },
+            partialStreams: {},
+            checkpointRounds: 1,
+            conflictResolutionTriggered: false
+        };
+
+        for (const ev of this.events) {
+            if (ev.type === 'run.started') {
+                state.objective = ev.data.objective;
+            } else if (ev.type === 'phase.transition') {
+                state.status = ev.data.status;
+            } else if (ev.type === 'agent.plan.round1') {
+                state.planningBoard.round1Proposals[ev.data.agentKey] = ev.data.content;
+            } else if (ev.type === 'agent.plan.round2') {
+                state.planningBoard.finalAssignments[ev.data.agentKey] = ev.data.content;
+            } else if (ev.type === 'agent.finding') {
+                state.findingsBoard.push({ agent: ev.data.agent, content: ev.data.content });
+            } else if (ev.type === 'checkpoint.analysis') {
+                state.checkpointBoard.analysis = ev.data.content;
+            } else if (ev.type === 'checkpoint.conflict') {
+                state.conflictResolutionTriggered = true;
+                state.checkpointRounds = ev.data.rounds;
+            } else if (ev.type === 'stream.delta') {
+                state.partialStreams[ev.data.agentKey] = ev.data.chunk;
+            } else if (ev.type === 'stream.end') {
+                delete state.partialStreams[ev.data.agentKey];
+            }
+        }
+        return state;
+    }
+    
+    static fromData(data) {
+        if (!data) return null;
+        const store = new RunStore(data.run_id, data.objective);
+        bindRunStoreUI(store);
+        if (data.events) {
+            store.events = data.events;
+        } else if (data.status) {
+            // Legacy migration
+            store.emit('run.started', { objective: data.objective });
+            if (data.planningBoard) {
+                for (const [k, v] of Object.entries(data.planningBoard.round1Proposals || {})) {
+                    store.emit('agent.plan.round1', { agentKey: k, content: v });
+                }
+                for (const [k, v] of Object.entries(data.planningBoard.finalAssignments || {})) {
+                    store.emit('agent.plan.round2', { agentKey: k, content: v });
+                }
+            }
+            if (data.findingsBoard) {
+                data.findingsBoard.forEach(f => store.emit('agent.finding', f));
+            }
+            if (data.checkpointBoard && data.checkpointBoard.analysis) {
+                store.emit('checkpoint.analysis', { content: data.checkpointBoard.analysis });
+            }
+            if (data.conflictResolutionTriggered) {
+                store.emit('checkpoint.conflict', { rounds: data.checkpointRounds || 2 });
+            }
+            store.emit('phase.transition', { status: data.status });
+        }
+        return store;
+    }
+}
+
+class MarkdownThrottler {
+    constructor(element, container) {
+        this.element = element;
+        this.container = container;
+        this.buffer = "";
+        this.lastRenderTime = 0;
+        this.rafId = null;
+    }
+
+    update(text) {
+        this.buffer = text;
+        if (!this.rafId) {
+            this.rafId = requestAnimationFrame((time) => this.render(time));
+        }
+    }
+
+    render(time) {
+        this.rafId = null;
+        if (time - this.lastRenderTime < 100) {
+            this.rafId = requestAnimationFrame((time) => this.render(time));
+            return;
+        }
+        this.lastRenderTime = time;
+        
+        const isAtBottom = this.container.scrollHeight - this.container.scrollTop <= this.container.clientHeight + 50;
+        
+        this.element.innerHTML = marked.parse(this.buffer);
+        
+        if (isAtBottom) {
+            this.container.scrollTop = this.container.scrollHeight;
+        }
+    }
+
+    flush() {
+        if (this.rafId) {
+            cancelAnimationFrame(this.rafId);
+            this.rafId = null;
+        }
+        this.element.innerHTML = marked.parse(this.buffer);
+        this.container.scrollTop = this.container.scrollHeight;
+    }
+}
+
+
+function updateTimelineUI(state) {
+    const timeline = document.getElementById('mission-timeline');
+    if (!timeline) return;
+    
+    // Only show if we are in a mission
+    if (state.status) {
+        timeline.style.display = 'flex';
+    } else {
+        timeline.style.display = 'none';
+        return;
+    }
+
+    const steps = ['start', 'plan1', 'plan2', 'retrieval', 'checkpoint', 'synthesis'];
+    let currentFound = false;
+
+    // Map state.status to steps
+    const statusMap = {
+        'planning_round_1': 'plan1',
+        'planning_round_2': 'plan2',
+        'retrieval': 'retrieval',
+        'checkpoint': 'checkpoint',
+        'synthesis': 'synthesis',
+        'complete': 'synthesis'
+    };
+    const currentStepId = statusMap[state.status] || 'start';
+
+    // Reverse iterate to find active
+    for (let i = steps.length - 1; i >= 0; i--) {
+        const step = steps[i];
+        const el = document.getElementById('timeline-' + step);
+        if (!el) continue;
+        
+        el.className = 'timeline-step';
+
+        if (step === currentStepId) {
+            el.classList.add('active');
+            currentFound = true;
+        } else if (currentFound) {
+            el.classList.add('completed');
+        } else {
+            el.classList.add('pending');
+        }
+    }
+}
+
+function updateAgentPills(state) {
+    const activeAgents = Object.keys(AGENTS);
+    for (const agentKey of activeAgents) {
+        const pillsContainer = document.getElementById('pills-' + AGENTS[agentKey].id);
+        if (!pillsContainer) continue;
+        
+        let pillsHtml = '';
+
+        // Add tool pill if streaming
+        if (state.partialStreams[agentKey]) {
+            pillsHtml += `<span class="agent-pill streaming">Streaming...</span>`;
+        }
+        
+        // Add status pill
+        let statusText = 'Standing by';
+        let statusClass = 'standing-by';
+        
+        if (state.status === 'planning_round_1') { statusText = 'Planning'; statusClass = 'planning'; }
+        if (state.status === 'planning_round_2') { statusText = 'Committing'; statusClass = 'planning'; }
+        if (state.status === 'retrieval') { statusText = 'Retrieving'; statusClass = 'retrieving'; }
+        if (state.status === 'checkpoint' && agentKey === 'dgx_spark_2') { statusText = 'Evaluating'; statusClass = 'evaluating'; }
+        if (state.status === 'synthesis' && agentKey === 'dgx_spark_2') { statusText = 'Synthesizing'; statusClass = 'synthesizing'; }
+
+        pillsHtml += `<span class="agent-pill ${statusClass}">${statusText}</span>`;
+
+        pillsContainer.innerHTML = pillsHtml;
+    }
+}
+
+function bindRunStoreUI(store) {
+    store.on('*', (ev, self) => {
+        const state = self.getState();
+        updateTimelineUI(state);
+        updateAgentPills(state);
+    });
+    const state = store.getState();
+    updateTimelineUI(state);
+    updateAgentPills(state);
+}
 
 // UI Elements
 const chatContainerWrapper = document.getElementById('chatContainerWrapper');
@@ -56,7 +280,8 @@ function loadSessionsFromStorage() {
         const div = document.createElement('div');
         div.className = `session-item ${s.id === currentSessionId ? 'active' : ''}`;
         
-        const state = globalMissionStates[s.id];
+        const runStore = globalMissionStates[s.id] || (s.missionState ? RunStore.fromData(s.missionState) : null);
+        const state = runStore ? runStore.getState() : null;
         const isProcessing = state && state.status && state.status !== 'complete';
         const processingHtml = isProcessing ? `<div class="processing-spinner" title="Processing..."></div>` : '';
 
@@ -92,15 +317,15 @@ function deleteSession(id, event) {
     }
 }
 
-function saveSession(id, history, missionState = null) {
+function saveSession(id, history, runStore = null) {
     const sessions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
     const existingIndex = sessions.findIndex(s => s.id === id);
     let title = history.length > 1 ? history[1].content.substring(0, 30) + '...' : 'New Chat';
     
-    if (missionState) {
-        globalMissionStates[id] = missionState;
+    if (runStore) {
+        globalMissionStates[id] = runStore;
     } else if (globalMissionStates[id]) {
-        missionState = globalMissionStates[id];
+        runStore = globalMissionStates[id];
     }
 
     const sessionData = {
@@ -108,7 +333,7 @@ function saveSession(id, history, missionState = null) {
         title: title,
         date: existingIndex >= 0 ? sessions[existingIndex].date : Date.now(),
         history: history,
-        missionState: missionState || null
+        missionState: runStore || null
     };
 
     if (existingIndex >= 0) {
@@ -129,7 +354,8 @@ function throttledSaveSession(id, history, state) {
     saveTimeout = setTimeout(() => saveSession(id, history, state), 500);
 }
 
-function restoreStoryboard(state, container, sessionId) {
+function restoreStoryboard(runStore, container, sessionId) {
+    const state = runStore.getState();
     const storyboardMsg = appendMessage('system', '', 'Mission Storyboard', true, container);
     
     // Determine status text/color based on state.status
@@ -261,11 +487,14 @@ function loadSession(id) {
         switchChatContainer(id);
         
         globalHistory = session.history;
-        if (session.missionState) globalMissionStates[id] = session.missionState;
+        if (session.missionState) globalMissionStates[id] = RunStore.fromData(session.missionState);
         renderHistory();
         
-        if (session.missionState && session.missionState.status !== 'complete' && !processingSessions[id]) {
-            resumeMission(id, session.history, session.missionState);
+        if (globalMissionStates[id]) {
+            const state = globalMissionStates[id].getState();
+            if (state.status !== 'complete' && !processingSessions[id]) {
+                resumeMission(id, session.history, globalMissionStates[id]);
+            }
         }
         
         loadSessionsFromStorage();
@@ -286,7 +515,8 @@ function renderHistory() {
     if (!container) return;
     container.innerHTML = '<div class="system-message">System initialized. Connected to Hermes Hub.</div>';
     
-    const mState = globalMissionStates[currentSessionId];
+    const mStore = globalMissionStates[currentSessionId];
+    const mState = mStore ? mStore.getState() : null;
     
     globalHistory.forEach((msg, idx) => {
         if (msg.role === 'system' && msg.content === DEFAULT_SYSTEM_PROMPT.content) return; // skip initial prompt
@@ -313,8 +543,8 @@ function renderHistory() {
             if(globalHistory[i].role === 'user') { lastUserIdx = i; break; }
         }
         
-        if (mState && idx === lastUserIdx && msg.role === 'user') {
-            restoreStoryboard(mState, container, currentSessionId);
+        if (mStore && idx === lastUserIdx && msg.role === 'user') {
+            restoreStoryboard(mStore, container, currentSessionId);
         }
     });
     
@@ -376,7 +606,7 @@ messageInput.addEventListener('keydown', (e) => {
     }
 });
 
-function resumeMission(id, history, missionState) {
+function resumeMission(id, history, runStore) {
     processingSessions[id] = true;
     if (currentSessionId === id) {
         sendBtn.disabled = true;
@@ -384,10 +614,11 @@ function resumeMission(id, history, missionState) {
     const thisContainer = sessionDOMs[id];
     const activeAgents = getActiveAgents();
     
-    missionState.partialStreams = {};
-    saveSession(id, history, missionState);
+    // Clear out partial streams on resume
+    runStore.events = runStore.events.filter(e => e.type !== 'stream.delta');
+    saveSession(id, history, runStore);
     
-    executeMission(id, history, missionState, activeAgents, missionState.objective, thisContainer);
+    executeMission(id, history, runStore, activeAgents, runStore.objective, thisContainer);
 }
 
 chatForm.addEventListener('submit', async (e) => {
@@ -410,26 +641,21 @@ chatForm.addEventListener('submit', async (e) => {
     appendMessage('user', text, 'You', false, thisContainer);
     thisHistory.push({ role: 'user', content: text });
     
-    let missionState = {
-        objective: text,
-        status: "planning_round_1",
-        planningBoard: { round1Proposals: {}, finalAssignments: {} },
-        findingsBoard: [],
-        checkpointBoard: { missingEvidence: [], conflicts: [], consensusReached: false },
-        partialStreams: {}
-    };
+    let runStore = new RunStore(thisSessionId, text);
+    bindRunStoreUI(runStore);
+    runStore.emit('run.started', { objective: text });
     
-    saveSession(thisSessionId, thisHistory, missionState);
+    saveSession(thisSessionId, thisHistory, runStore);
     if (currentSessionId === thisSessionId) {
         globalHistory = [...thisHistory];
-        globalMissionStates[thisSessionId] = missionState;
+        globalMissionStates[thisSessionId] = runStore;
     }
 
     const activeAgents = getActiveAgents();
-    executeMission(thisSessionId, thisHistory, missionState, activeAgents, text, thisContainer);
+    executeMission(thisSessionId, thisHistory, runStore, activeAgents, text, thisContainer);
 });
 
-async function executeMission(thisSessionId, thisHistory, missionState, activeAgents, text, thisContainer) {
+async function executeMission(thisSessionId, thisHistory, runStore, activeAgents, text, thisContainer) {
     let planningBoard = document.getElementById(`planning-board-${thisSessionId}`);
     let findingsBoard = document.getElementById(`findings-board-${thisSessionId}`);
     let checkpointBoard = document.getElementById(`checkpoint-board-${thisSessionId}`);
@@ -463,11 +689,14 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
     const checkpointContent = checkpointBoard.querySelector('.board-content');
 
     try {
-        if (missionState.status === "planning_round_1") {
+        let state = runStore.getState();
+
+        if (state.status === "planning_round_1") {
             planningStatus.innerText = "Round 1 (Proposals)";
             const round1Promises = activeAgents.map(async (agentKey) => {
-                if (missionState.planningBoard.round1Proposals[agentKey]) {
-                    return { agentKey, name: AGENTS[agentKey].name, content: missionState.planningBoard.round1Proposals[agentKey] };
+                state = runStore.getState();
+                if (state.planningBoard.round1Proposals[agentKey]) {
+                    return { agentKey, name: AGENTS[agentKey].name, content: state.planningBoard.round1Proposals[agentKey] };
                 }
 
                 const agentName = AGENTS[agentKey].name;
@@ -478,36 +707,38 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
                 agentDiv.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
                 planningContent.appendChild(agentDiv);
                 const textDiv = agentDiv.querySelector('.agent-text');
+                const throttler = new MarkdownThrottler(textDiv, thisContainer);
                 
                 const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
-                    textDiv.innerHTML = marked.parse(chunk);
-                    thisContainer.scrollTop = thisContainer.scrollHeight;
-                    missionState.partialStreams = missionState.partialStreams || {};
-                    missionState.partialStreams[agentKey] = chunk;
-                    throttledSaveSession(thisSessionId, thisHistory, missionState);
+                    throttler.update(chunk);
+                    runStore.emit('stream.delta', { agentKey: agentKey, chunk: chunk });
+                    throttledSaveSession(thisSessionId, thisHistory, runStore);
                 }, thisContainer);
                 
-                missionState.planningBoard.round1Proposals[agentKey] = result.content;
-                delete missionState.partialStreams[agentKey];
-                saveSession(thisSessionId, thisHistory, missionState);
+                throttler.flush();
+                runStore.emit('stream.end', { agentKey: agentKey });
+                runStore.emit('agent.plan.round1', { agentKey: agentKey, content: result.content });
+                saveSession(thisSessionId, thisHistory, runStore);
                 return { agentKey, name: agentName, content: result.content };
             });
             
             await Promise.all(round1Promises);
-            missionState.status = "planning_round_2";
-            saveSession(thisSessionId, thisHistory, missionState);
+            runStore.emit('phase.transition', { status: 'planning_round_2' });
+            saveSession(thisSessionId, thisHistory, runStore);
         }
 
-        if (missionState.status === "planning_round_2") {
+        state = runStore.getState();
+        if (state.status === "planning_round_2") {
             planningStatus.innerText = "Round 2 (Commitment)";
             
             let round1Context = "ROUND 1 PROPOSALS:\n";
-            Object.entries(missionState.planningBoard.round1Proposals).forEach(([ak, content]) => {
+            Object.entries(state.planningBoard.round1Proposals).forEach(([ak, content]) => {
                 round1Context += `- ${AGENTS[ak]?.name || ak}: ${content}\n`;
             });
             
             for (const agentKey of activeAgents) {
-                if (missionState.planningBoard.finalAssignments[agentKey]) continue;
+                state = runStore.getState();
+                if (state.planningBoard.finalAssignments[agentKey]) continue;
 
                 const agentName = AGENTS[agentKey].name;
                 const prompt = `MISSION: "${text}".\n\n${round1Context}\n\nBased on the team's proposals, lock in your final role and specific task assignment. If someone else took your target, PIVOT to a new non-overlapping target. Output your final 1-sentence commitment.`;
@@ -517,38 +748,40 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
                 agentDiv.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
                 planningContent.appendChild(agentDiv);
                 const textDiv = agentDiv.querySelector('.agent-text');
+                const throttler = new MarkdownThrottler(textDiv, thisContainer);
                 
                 const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
-                    textDiv.innerHTML = marked.parse(chunk);
-                    thisContainer.scrollTop = thisContainer.scrollHeight;
-                    missionState.partialStreams = missionState.partialStreams || {};
-                    missionState.partialStreams[agentKey] = chunk;
-                    throttledSaveSession(thisSessionId, thisHistory, missionState);
+                    throttler.update(chunk);
+                    runStore.emit('stream.delta', { agentKey: agentKey, chunk: chunk });
+                    throttledSaveSession(thisSessionId, thisHistory, runStore);
                 }, thisContainer);
                 
-                missionState.planningBoard.finalAssignments[agentKey] = result.content;
-                delete missionState.partialStreams[agentKey];
-                saveSession(thisSessionId, thisHistory, missionState);
+                throttler.flush();
+                runStore.emit('stream.end', { agentKey: agentKey });
+                runStore.emit('agent.plan.round2', { agentKey: agentKey, content: result.content });
+                saveSession(thisSessionId, thisHistory, runStore);
             }
             
             planningStatus.innerText = "Locked";
             planningStatus.style.animation = "none";
             planningStatus.style.color = "#10b981";
             
-            missionState.status = "retrieval";
-            saveSession(thisSessionId, thisHistory, missionState);
+            runStore.emit('phase.transition', { status: 'retrieval' });
+            saveSession(thisSessionId, thisHistory, runStore);
+            state = runStore.getState();
             
             let teamPlanContext = "TEAM PLAN LOCK:\n";
-            activeAgents.forEach(k => teamPlanContext += `- ${AGENTS[k]?.name || k}: ${missionState.planningBoard.finalAssignments[k]}\n`);
+            activeAgents.forEach(k => teamPlanContext += `- ${AGENTS[k]?.name || k}: ${state.planningBoard.finalAssignments[k]}\n`);
             thisHistory.push({ role: 'system', content: teamPlanContext });
         }
 
-        if (missionState.status === "retrieval") {
+        state = runStore.getState();
+        if (state.status === "retrieval") {
             findingsBoard.style.display = 'flex';
             
             if (!thisHistory.find(h => h.role === 'system' && h.content && h.content.startsWith("TEAM PLAN LOCK"))) {
                 let teamPlanContext = "TEAM PLAN LOCK:\n";
-                activeAgents.forEach(k => teamPlanContext += `- ${AGENTS[k]?.name || k}: ${missionState.planningBoard.finalAssignments[k]}\n`);
+                activeAgents.forEach(k => teamPlanContext += `- ${AGENTS[k]?.name || k}: ${state.planningBoard.finalAssignments[k]}\n`);
                 thisHistory.push({ role: 'system', content: teamPlanContext });
             }
 
@@ -561,10 +794,11 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
                     const agentName = AGENTS[agentKey].name;
                     const subAgentName = `${agentName} (Thread ${i})`;
                     
-                    if (missionState.findingsBoard.find(f => f.agent === subAgentName)) {
+                    state = runStore.getState();
+                    if (state.findingsBoard.find(f => f.agent === subAgentName)) {
                         retrievalPromises.push(Promise.resolve({ 
                             agent: subAgentName, 
-                            result: missionState.findingsBoard.find(f => f.agent === subAgentName).content, 
+                            result: state.findingsBoard.find(f => f.agent === subAgentName).content, 
                             error: null 
                         }));
                         continue;
@@ -577,17 +811,17 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
                     cardDiv.innerHTML = `<div class="finding-source">${subAgentName}</div><div class="finding-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
                     findingsContent.appendChild(cardDiv);
                     const textDiv = cardDiv.querySelector('.finding-text');
+                    const throttler = new MarkdownThrottler(textDiv, thisContainer);
                     
                     const p = streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
-                        textDiv.innerHTML = marked.parse(chunk);
-                        thisContainer.scrollTop = thisContainer.scrollHeight;
-                        missionState.partialStreams = missionState.partialStreams || {};
-                        missionState.partialStreams[subAgentName] = chunk;
-                        throttledSaveSession(thisSessionId, thisHistory, missionState);
+                        throttler.update(chunk);
+                        runStore.emit('stream.delta', { agentKey: subAgentName, chunk: chunk });
+                        throttledSaveSession(thisSessionId, thisHistory, runStore);
                     }, thisContainer).then(result => {
-                        missionState.findingsBoard.push({ agent: subAgentName, content: result.content || result.error });
-                        delete missionState.partialStreams[subAgentName];
-                        saveSession(thisSessionId, thisHistory, missionState);
+                        throttler.flush();
+                        runStore.emit('stream.end', { agentKey: subAgentName });
+                        runStore.emit('agent.finding', { agent: subAgentName, content: result.content || result.error });
+                        saveSession(thisSessionId, thisHistory, runStore);
                         return { agent: subAgentName, result: result.content, error: result.error };
                     });
                     
@@ -600,16 +834,17 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
             findingsBoard.querySelector('.board-status').style.animation = "none";
             findingsBoard.querySelector('.board-status').style.color = "#10b981";
             
-            missionState.status = "checkpoint";
-            saveSession(thisSessionId, thisHistory, missionState);
+            runStore.emit('phase.transition', { status: 'checkpoint' });
+            saveSession(thisSessionId, thisHistory, runStore);
         }
 
-        if (missionState.status === "checkpoint") {
+        state = runStore.getState();
+        if (state.status === "checkpoint") {
             checkpointBoard.style.display = 'flex';
             
             if (!thisHistory.find(h => h.role === 'system' && h.content && h.content.startsWith("EVIDENCE FOUND"))) {
                 let findingsContext = "EVIDENCE FOUND:\n";
-                missionState.findingsBoard.forEach(f => {
+                state.findingsBoard.forEach(f => {
                     if (!f.agent.includes('(Follow-up)')) {
                         findingsContext += `[${f.agent}]: ${f.content}\n`;
                     }
@@ -619,35 +854,32 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
 
             const evaluatorKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
             const evaluatorName = AGENTS[evaluatorKey].name;
-            let checkpointRounds = 1;
-            let conflictResolutionTriggered = false;
 
-            if (!missionState.checkpointBoard.analysis) {
+            if (!state.checkpointBoard.analysis) {
                 const cpDiv = document.createElement('div');
                 cpDiv.className = 'agent-contribution';
                 cpDiv.innerHTML = `<div class="agent-role">${evaluatorName} (Evaluator)</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
                 checkpointContent.appendChild(cpDiv);
                 const cpTextDiv = cpDiv.querySelector('.agent-text');
+                const throttler = new MarkdownThrottler(cpTextDiv, thisContainer);
                 
                 const cpPrompt = `Review the EVIDENCE FOUND. Identify: 1. Conflicting claims. 2. Missing evidence required to fully answer the user's request. Output CONSENSUS: TRUE if we have enough verified data to proceed to final synthesis. Output CONSENSUS: FALSE and list the missing evidence if we need another retrieval pass.`;
                 
                 const cpResult = await streamChat(evaluatorKey, [...thisHistory, { role: 'user', content: cpPrompt }], (chunk) => {
-                    cpTextDiv.innerHTML = marked.parse(chunk);
-                    thisContainer.scrollTop = thisContainer.scrollHeight;
-                    missionState.partialStreams = missionState.partialStreams || {};
-                    missionState.partialStreams['evaluator'] = chunk;
-                    throttledSaveSession(thisSessionId, thisHistory, missionState);
+                    throttler.update(chunk);
+                    runStore.emit('stream.delta', { agentKey: 'evaluator', chunk: chunk });
+                    throttledSaveSession(thisSessionId, thisHistory, runStore);
                 }, thisContainer);
                 
+                throttler.flush();
                 const cpContent = cpResult.content || "";
-                missionState.checkpointBoard.analysis = cpContent;
-                delete missionState.partialStreams['evaluator'];
-                saveSession(thisSessionId, thisHistory, missionState);
+                runStore.emit('stream.end', { agentKey: 'evaluator' });
+                runStore.emit('checkpoint.analysis', { content: cpContent, conflictTriggered: cpContent.includes('CONSENSUS: FALSE') });
+                saveSession(thisSessionId, thisHistory, runStore);
+                
+                state = runStore.getState();
                 
                 if (cpContent.includes('CONSENSUS: FALSE')) {
-                    conflictResolutionTriggered = true;
-                    checkpointRounds++;
-                    
                     const decDiv = document.createElement('div');
                     decDiv.className = 'checkpoint-decision consensus-false';
                     decDiv.innerText = 'CONSENSUS: FALSE - Triggering Follow-up Pass';
@@ -663,17 +895,19 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
                         cardDiv.innerHTML = `<div class="finding-source">${agentName} (Follow-up)</div><div class="finding-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
                         findingsContent.appendChild(cardDiv);
                         
+                        const textDiv = cardDiv.querySelector('.finding-text');
+                        const followupThrottler = new MarkdownThrottler(textDiv, thisContainer);
+
                         const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: 'Execute follow-up retrieval to resolve the checkpoint gaps.' }], (chunk) => {
-                            cardDiv.querySelector('.finding-text').innerHTML = marked.parse(chunk);
-                            thisContainer.scrollTop = thisContainer.scrollHeight;
-                            missionState.partialStreams = missionState.partialStreams || {};
-                            missionState.partialStreams[agentName + ' (Follow-up)'] = chunk;
-                            throttledSaveSession(thisSessionId, thisHistory, missionState);
+                            followupThrottler.update(chunk);
+                            runStore.emit('stream.delta', { agentKey: agentName + ' (Follow-up)', chunk: chunk });
+                            throttledSaveSession(thisSessionId, thisHistory, runStore);
                         }, thisContainer);
                         
-                        missionState.findingsBoard.push({ agent: agentName + ' (Follow-up)', content: result.content });
-                        delete missionState.partialStreams[agentName + ' (Follow-up)'];
-                        saveSession(thisSessionId, thisHistory, missionState);
+                        followupThrottler.flush();
+                        runStore.emit('stream.end', { agentKey: agentName + ' (Follow-up)' });
+                        runStore.emit('agent.finding', { agent: agentName + ' (Follow-up)', content: result.content });
+                        saveSession(thisSessionId, thisHistory, runStore);
                         return result.content;
                     });
                     
@@ -685,14 +919,11 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
                     checkpointContent.appendChild(decDiv);
                 }
             } else {
-                if (missionState.checkpointBoard.analysis.includes('CONSENSUS: FALSE')) {
-                    conflictResolutionTriggered = true;
-                    checkpointRounds++;
-                    
-                    const followups = missionState.findingsBoard.filter(f => f.agent.includes('(Follow-up)'));
+                if (state.conflictResolutionTriggered) {
+                    const followups = state.findingsBoard.filter(f => f.agent.includes('(Follow-up)'));
                     if (followups.length < activeAgents.length) {
                         if (!thisHistory.find(h => h.role === 'system' && h.content && h.content.startsWith("CHECKPOINT FAILED"))) {
-                            thisHistory.push({ role: 'system', content: `CHECKPOINT FAILED: ${missionState.checkpointBoard.analysis}\n\nPlease perform a targeted follow-up retrieval to resolve the gaps/conflicts.` });
+                            thisHistory.push({ role: 'system', content: `CHECKPOINT FAILED: ${state.checkpointBoard.analysis}\n\nPlease perform a targeted follow-up retrieval to resolve the gaps/conflicts.` });
                         }
 
                         const followUpPromises = activeAgents.map(async (agentKey) => {
@@ -706,17 +937,19 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
                             cardDiv.innerHTML = `<div class="finding-source">${agentName} (Follow-up)</div><div class="finding-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
                             findingsContent.appendChild(cardDiv);
                             
+                            const textDiv = cardDiv.querySelector('.finding-text');
+                            const followupThrottler = new MarkdownThrottler(textDiv, thisContainer);
+
                             const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: 'Execute follow-up retrieval to resolve the checkpoint gaps.' }], (chunk) => {
-                                cardDiv.querySelector('.finding-text').innerHTML = marked.parse(chunk);
-                                thisContainer.scrollTop = thisContainer.scrollHeight;
-                                missionState.partialStreams = missionState.partialStreams || {};
-                                missionState.partialStreams[agentName + ' (Follow-up)'] = chunk;
-                                throttledSaveSession(thisSessionId, thisHistory, missionState);
+                                followupThrottler.update(chunk);
+                                runStore.emit('stream.delta', { agentKey: agentName + ' (Follow-up)', chunk: chunk });
+                                throttledSaveSession(thisSessionId, thisHistory, runStore);
                             }, thisContainer);
                             
-                            missionState.findingsBoard.push({ agent: agentName + ' (Follow-up)', content: result.content });
-                            delete missionState.partialStreams[agentName + ' (Follow-up)'];
-                            saveSession(thisSessionId, thisHistory, missionState);
+                            followupThrottler.flush();
+                            runStore.emit('stream.end', { agentKey: agentName + ' (Follow-up)' });
+                            runStore.emit('agent.finding', { agent: agentName + ' (Follow-up)', content: result.content });
+                            saveSession(thisSessionId, thisHistory, runStore);
                             return result.content;
                         });
                         await Promise.all(followUpPromises);
@@ -728,18 +961,18 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
             checkpointBoard.querySelector('.board-status').style.animation = "none";
             checkpointBoard.querySelector('.board-status').style.color = "#10b981";
             
-            missionState.status = "synthesis";
-            missionState.checkpointRounds = checkpointRounds;
-            missionState.conflictResolutionTriggered = conflictResolutionTriggered;
-            saveSession(thisSessionId, thisHistory, missionState);
+            runStore.emit('phase.transition', { status: 'synthesis' });
+            saveSession(thisSessionId, thisHistory, runStore);
         }
 
-        if (missionState.status === "synthesis") {
+        state = runStore.getState();
+        if (state.status === "synthesis") {
             const synthStart = performance.now();
             const finalContentDiv = appendMessage('assistant', '<div class="typing-indicator"><span></span><span></span><span></span></div>', 'Hermes Orchestrator (Synthesis)', false, thisContainer);
+            const synthThrottler = new MarkdownThrottler(finalContentDiv, thisContainer);
             
             let fullFindings = "";
-            missionState.findingsBoard.forEach(f => fullFindings += `[${f.agent}]: ${f.content}\n`);
+            state.findingsBoard.forEach(f => fullFindings += `[${f.agent}]: ${f.content}\n`);
             
             const synthMessages = [...thisHistory, { 
                 role: "user", 
@@ -749,26 +982,26 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
             const evaluatorKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
 
             const finalResult = await streamChat(evaluatorKey, synthMessages, (chunk) => {
-                finalContentDiv.innerHTML = marked.parse(chunk);
-                thisContainer.scrollTop = thisContainer.scrollHeight;
-                missionState.partialStreams = missionState.partialStreams || {};
-                missionState.partialStreams['synthesis'] = chunk;
-                throttledSaveSession(thisSessionId, thisHistory, missionState);
+                synthThrottler.update(chunk);
+                runStore.emit('stream.delta', { agentKey: 'synthesis', chunk: chunk });
+                throttledSaveSession(thisSessionId, thisHistory, runStore);
             }, thisContainer);
             
+            synthThrottler.flush();
             const latency_ms = performance.now() - synthStart;
             const token_count = Math.round((finalResult.content || '').length / 4);
             
             thisHistory.push({ role: "assistant", content: finalResult.content });
-            delete missionState.partialStreams['synthesis'];
-            missionState.status = "complete";
+            runStore.emit('stream.end', { agentKey: 'synthesis' });
+            runStore.emit('phase.transition', { status: 'complete' });
             
-            saveSession(thisSessionId, thisHistory, missionState);
+            saveSession(thisSessionId, thisHistory, runStore);
             if (currentSessionId === thisSessionId) {
                 globalHistory = [...thisHistory];
-                globalMissionStates[thisSessionId] = missionState;
+                globalMissionStates[thisSessionId] = runStore;
             }
             
+            state = runStore.getState();
             const successRate = finalResult.content && finalResult.content.includes('TASK FAILED') ? 0.2 : 1.0;
             fetch('http://localhost:3000/api/evals/submit', {
                 method: 'POST',
@@ -779,8 +1012,8 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
                     success_rate: successRate,
                     tokens: token_count,
                     latency: latency_ms,
-                    collaboration_rounds: missionState.checkpointRounds || 1,
-                    conflict_resolution: missionState.conflictResolutionTriggered || false
+                    collaboration_rounds: state.checkpointRounds || 1,
+                    conflict_resolution: state.conflictResolutionTriggered || false
                 })
             }).catch(e => console.error("Auto-eval failed:", e));
             
@@ -798,8 +1031,6 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
         }
     }
 }
-
-
 function setAgentStatus(agentKey, state, isThinking) {
     const card = document.getElementById(`agent-${AGENTS[agentKey].id}`);
     const stateText = document.getElementById(`state-${AGENTS[agentKey].id}`);
@@ -865,6 +1096,11 @@ async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
     const url = AGENTS[agentKey].url;
     setAgentStatus(agentKey, "Processing...", true);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(new Error("Absolute 30s timeout reached")), 30000);
+    
+    let stalledInterval;
+
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -878,7 +1114,8 @@ async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
                 stream: true,
                 temperature: 0.4,
                 max_tokens: 4096
-            })
+            }),
+            signal: controller.signal
         });
 
         if (!response.ok) {
@@ -890,12 +1127,20 @@ async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
         
         let fullText = "";
         let buffer = "";
+        let lastChunkTime = Date.now();
+
+        stalledInterval = setInterval(() => {
+            if (Date.now() - lastChunkTime > 15000) {
+                controller.abort(new Error("Stalled for 15s"));
+            }
+        }, 1000);
 
         let isDone = false;
         while (!isDone) {
             const { done, value } = await reader.read();
             if (done) break;
 
+            lastChunkTime = Date.now();
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop(); 
@@ -919,6 +1164,8 @@ async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
                                 appendToolCall(AGENTS[agentKey].name, data.tool_name, toolContainer);
                             }
                         } catch(e) {}
+                    } else if (currentEvent === 'heartbeat') {
+                        // ignore heartbeat data, it just resets lastChunkTime because read() returns
                     } else {
                         try {
                             const data = JSON.parse(trimmedLine.substring(6));
@@ -936,10 +1183,14 @@ async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
             }
         }
         
+        clearTimeout(timeoutId);
+        clearInterval(stalledInterval);
         setAgentStatus(agentKey, "Standing by", false);
         return { type: 'text', content: fullText };
 
     } catch (error) {
+        clearTimeout(timeoutId);
+        if (stalledInterval) clearInterval(stalledInterval);
         setAgentStatus(agentKey, "Error", false);
         console.error("Stream error:", error);
         return { type: 'error', error: error.message };
@@ -974,22 +1225,24 @@ async function autoResearchTask(finalAnswer) {
 
 async function orchestrate(agentKey, messages) {
     const agentName = AGENTS[agentKey].name;
-    const contentDiv = appendMessage('agent', '<div class="typing-indicator"><span></span><span></span><span></span></div>', agentName);
+    const container = sessionDOMs[currentSessionId];
+    const contentDiv = appendMessage('agent', '<div class="typing-indicator"><span></span><span></span><span></span></div>', agentName, false, container);
+    const throttler = new MarkdownThrottler(contentDiv, container);
     
     const result = await streamChat(agentKey, messages, (text) => {
-        contentDiv.innerHTML = marked.parse(text);
-        if (toolContainer) { toolContainer.scrollTop = toolContainer.scrollHeight; }
+        throttler.update(text);
     });
 
+    throttler.flush();
     if (result.type === 'error') {
         contentDiv.innerHTML = `<span style="color: #ef4444;">Error: ${result.error}</span>`;
         return "";
     }
 
     if (result.type === 'text') {
-        contentDiv.innerHTML = marked.parse(result.content);
         return result.content;
     }
+}
 }
 
 // ----------------------------------------------------

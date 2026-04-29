@@ -178,14 +178,34 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_header('Cache-Control', 'no-cache')
                     self.end_headers()
                     
-                    while True:
-                        line = response.readline()
-                        if not line:
-                            break
-                        self.wfile.write(line)
-                        self.wfile.flush()
-                        if line.strip() == b"data: [DONE]":
-                            break
+                    import threading
+                    import time
+                    is_done = [False]
+                    
+                    def heartbeat_loop():
+                        while not is_done[0]:
+                            time.sleep(5)
+                            if not is_done[0]:
+                                try:
+                                    self.wfile.write(b": heartbeat\n\n")
+                                    self.wfile.flush()
+                                except:
+                                    break
+
+                    t = threading.Thread(target=heartbeat_loop, daemon=True)
+                    t.start()
+                    
+                    try:
+                        while True:
+                            line = response.readline()
+                            if not line:
+                                break
+                            self.wfile.write(line)
+                            self.wfile.flush()
+                            if line.strip() == b"data: [DONE]":
+                                break
+                    finally:
+                        is_done[0] = True
             except (ConnectionAbortedError, BrokenPipeError):
                 pass
             except Exception as e:
