@@ -9,7 +9,7 @@ const AGENTS = {
 const STORAGE_KEY = 'hermes_sessions';
 let DEFAULT_SYSTEM_PROMPT = {
     role: "system",
-    content: "You are part of a 3-agent swarm (Jetson, DGX1, DGX2). Coordinate and execute tasks intelligently. If your tool fails or you cannot complete your task, explicitly include the exact phrase 'TASK FAILED' in your response so other agents can step in. ALWAYS cite your sources using clickable markdown links, e.g., [Title](url), so the user can verify the data."
+    content: "You are part of a 3-agent swarm (Jetson, DGX1, DGX2) connected to the Hermes Gateway. You HAVE FULL ACCESS to web scraping and browsing tools. You MUST use your tools to fetch live data; do not apologize or claim you cannot access the internet. CRITICAL: You may attempt to use your tools a MAXIMUM OF 3 TIMES per turn. If you hit anti-bot protection or fail 3 times, you MUST STOP trying. Do not loop endlessly. Accept the failure and explicitly include the exact phrase 'TASK FAILED' in your response so other agents can step in. ALWAYS cite your sources using clickable markdown links, e.g., [Title](url), so the user can verify the data."
 };
 let globalHistory = [DEFAULT_SYSTEM_PROMPT];
 let currentSessionId = null;
@@ -314,9 +314,10 @@ function deleteSession(id, event) {
 }
 
 function saveSession(id, history, runStore = null) {
+  try {
     const sessions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
     const existingIndex = sessions.findIndex(s => s.id === id);
-    let title = history.length > 1 ? history[1].content.substring(0, 30) + '...' : 'New Chat';
+    let title = history.length > 1 ? (history[1].content || '').substring(0, 30) + '...' : 'New Chat';
     
     if (runStore) {
         globalMissionStates[id] = runStore;
@@ -324,12 +325,29 @@ function saveSession(id, history, runStore = null) {
         runStore = globalMissionStates[id];
     }
 
+    // Cap individual message sizes to prevent localStorage bloat from tool-block HTML
+    const MAX_MSG_SIZE = 10000; // 10KB per message
+    const cappedHistory = history.map(msg => {
+        if (msg.content && msg.content.length > MAX_MSG_SIZE) {
+            return { ...msg, content: msg.content.substring(0, MAX_MSG_SIZE) + '\n\n[...content truncated for storage...]' };
+        }
+        return msg;
+    });
+
+    // Cap RunStore events to prevent unbounded growth from stream.delta events
+    let cappedRunStore = runStore;
+    if (runStore && runStore.events && runStore.events.length > 200) {
+        // Strip stream.delta events (the biggest payload) while keeping structural events
+        const filtered = runStore.events.filter(e => e.type !== 'stream.delta');
+        cappedRunStore = { ...runStore, events: filtered };
+    }
+
     const sessionData = {
         id: id,
         title: title,
         date: existingIndex >= 0 ? sessions[existingIndex].date : Date.now(),
-        history: history,
-        missionState: runStore || null
+        history: cappedHistory,
+        missionState: cappedRunStore || null
     };
 
     if (existingIndex >= 0) {
@@ -338,8 +356,44 @@ function saveSession(id, history, runStore = null) {
         sessions.unshift(sessionData);
     }
     
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    // Quota-safe write: if localStorage is full, purge oldest sessions until it fits
+    const payload = JSON.stringify(sessions);
+    try {
+        localStorage.setItem(STORAGE_KEY, payload);
+    } catch (e) {
+        if (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014) {
+            console.warn(`[Storage] Quota exceeded (${(payload.length / 1024 / 1024).toFixed(1)}MB). Purging oldest sessions...`);
+            let trimmed = [...sessions];
+            while (trimmed.length > 1) {
+                const removeIdx = trimmed.findLastIndex(s => s.id !== id);
+                if (removeIdx === -1) break;
+                const removed = trimmed.splice(removeIdx, 1);
+                console.warn(`[Storage] Purged session "${removed[0]?.title}" to free space.`);
+                try {
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+                    console.log(`[Storage] Save succeeded after purge. ${trimmed.length} sessions remain.`);
+                    break;
+                } catch (retryErr) {
+                    // Still too big, keep purging
+                }
+            }
+            if (trimmed.length <= 1) {
+                try {
+                    const minimal = trimmed.map(s => ({ ...s, missionState: null }));
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(minimal));
+                    console.warn('[Storage] Saved with missionState stripped as last resort.');
+                } catch (finalErr) {
+                    console.error('[Storage] Cannot save even after full purge. Clearing all sessions.', finalErr);
+                    localStorage.removeItem(STORAGE_KEY);
+                }
+            }
+        }
+    }
     loadSessionsFromStorage();
+  } catch (outerErr) {
+    // Absolute last-resort: saveSession must NEVER throw and crash the mission
+    console.error('[Storage] saveSession crashed, mission continues:', outerErr);
+  }
 }
 
 
@@ -413,7 +467,16 @@ function restoreStoryboard(runStore, container, sessionId) {
             const cardDiv = document.createElement('div');
             cardDiv.className = 'finding-card';
             if (f.agent.includes('(Follow-up)')) cardDiv.style.border = '1px solid rgba(245, 158, 11, 0.4)';
-            cardDiv.innerHTML = `<div class="finding-source">${f.agent}</div><div class="finding-text">${marked.parse(f.content || '')}</div>`;
+            cardDiv.innerHTML = `
+                <details>
+                    <summary class="finding-source" style="cursor: pointer; font-weight: bold; padding-bottom: 5px; outline: none;">
+                        ${f.agent}
+                    </summary>
+                    <div class="finding-text" style="padding-top: 10px;">
+                        ${marked.parse(f.content || '')}
+                    </div>
+                </details>
+            `;
             findingsContent.appendChild(cardDiv);
         });
         
@@ -543,7 +606,7 @@ function renderHistory() {
 document.addEventListener('DOMContentLoaded', async () => {
     // Phase 1/3: Fetch live evolution data and set active archetype / prompt
     try {
-        const res = await fetch('http://localhost:3000/api/dashboard/evolution');
+        const res = await fetch('http://localhost:3005/api/dashboard/evolution');
         const json = await res.json();
         if (json.data && json.data.length > 0) {
             liveArchetypes = json.data;
@@ -631,7 +694,7 @@ chatForm.addEventListener('submit', async (e) => {
     bindRunStoreUI(runStore);
     runStore.emit('run.started', { objective: text });
     
-    saveSession(thisSessionId, thisHistory, runStore);
+    try { saveSession(thisSessionId, thisHistory, runStore); } catch(e) { console.warn('[Storage] Pre-mission save failed, continuing:', e.message); }
     if (currentSessionId === thisSessionId) {
         globalHistory = [...thisHistory];
         globalMissionStates[thisSessionId] = runStore;
@@ -685,7 +748,7 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
             
             state = runStore.getState();
             if (!state.planningBoard.delegations || Object.keys(state.planningBoard.delegations).length === 0) {
-                const prompt = `MISSION: "${text}".\n\nYou are the Coordinator. Break down this mission into distinct, non-overlapping search tasks for the team (${activeAgents.map(k => AGENTS[k].name).join(', ')}). Output the assignments clearly so each agent knows their specific target.`;
+                const prompt = `MISSION: "${text}".\n\nYou are the Coordinator. Break down this mission into distinct, non-overlapping search tasks for the team. Be efficient: if the mission is simple (e.g., "what is the weather"), you only need 1 or 2 tasks. If it is complex, you can create up to 6 tasks. Output your thought process, and at the very end of your response, provide the exact list of tasks separated by the '|' character on a single line starting with TASKS: (e.g. TASKS: Search weather in NY | Search weather in LA).`;
                 
                 const agentDiv = document.createElement('div');
                 agentDiv.className = 'agent-contribution';
@@ -703,10 +766,20 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
                 throttler.flush();
                 runStore.emit('stream.end', { agentKey: coordinatorKey });
                 
+                let parsedTasks = [];
+                const match = (result.content || "").match(/TASKS:\s*(.+)/);
+                if (match) {
+                    parsedTasks = match[1].split('|').map(t => t.trim()).filter(t => t.length > 0);
+                }
+                if (parsedTasks.length === 0) {
+                    parsedTasks = ["Execute general retrieval based on the plan"];
+                }
+
                 const delegations = {};
                 for (const ak of activeAgents) {
-                    delegations[ak] = result.content;
+                    delegations[ak] = result.content || `ERROR: ${result.error || 'Coordinator failed to generate a plan.'}`;
                 }
+                delegations.parsedTasks = parsedTasks;
                 
                 runStore.emit('agent.plan.delegation', { delegations: delegations });
                 saveSession(thisSessionId, thisHistory, runStore);
@@ -734,47 +807,60 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
             }
 
             const retrievalPromises = [];
-            const TARGET_CONCURRENCY = 6;
-            const subagentsPerBox = Math.ceil(TARGET_CONCURRENCY / activeAgents.length);
+            const tasks = state.planningBoard.delegations.parsedTasks || ["Execute general retrieval based on the plan"];
             
-            for (const agentKey of activeAgents) {
-                for (let i = 1; i <= subagentsPerBox; i++) {
-                    const agentName = AGENTS[agentKey].name;
-                    const subAgentName = `${agentName} (Thread ${i})`;
-                    
-                    state = runStore.getState();
-                    if (state.findingsBoard.find(f => f.agent === subAgentName)) {
-                        retrievalPromises.push(Promise.resolve({ 
-                            agent: subAgentName, 
-                            result: state.findingsBoard.find(f => f.agent === subAgentName).content, 
-                            error: null 
-                        }));
-                        continue;
-                    }
-
-                    const prompt = `Execute your locked task. **CRITICAL: You MUST use your native browser or search tools to fetch live data.** Do NOT hallucinate URLs or facts. Focus specifically on angle/sub-aspect ${i} of your strategy. If a tool fails, report 'TASK FAILED'. Output your findings strictly tagged with [CLAIM] your finding [/CLAIM] and [SOURCE] your source URL [/SOURCE].`;
-                    
-                    const cardDiv = document.createElement('div');
-                    cardDiv.className = 'finding-card';
-                    cardDiv.innerHTML = `<div class="finding-source">${subAgentName}</div><div class="finding-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
-                    findingsContent.appendChild(cardDiv);
-                    const textDiv = cardDiv.querySelector('.finding-text');
-                    const throttler = new MarkdownThrottler(textDiv, thisContainer);
-                    
-                    const p = streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
-                        throttler.update(chunk);
-                        runStore.emit('stream.delta', { agentKey: subAgentName, chunk: chunk });
-                        throttledSaveSession(thisSessionId, thisHistory, runStore);
-                    }, thisContainer).then(result => {
-                        throttler.flush();
-                        runStore.emit('stream.end', { agentKey: subAgentName });
-                        runStore.emit('agent.finding', { agent: subAgentName, content: result.content || result.error });
-                        saveSession(thisSessionId, thisHistory, runStore);
-                        return { agent: subAgentName, result: result.content, error: result.error };
-                    });
-                    
-                    retrievalPromises.push(p);
+            for (let i = 0; i < tasks.length; i++) {
+                const specificTask = tasks[i];
+                const agentKey = activeAgents[i % activeAgents.length];
+                const agentName = AGENTS[agentKey].name;
+                const subAgentName = `${agentName} (Thread ${i + 1})`;
+                
+                state = runStore.getState();
+                if (state.findingsBoard.find(f => f.agent === subAgentName)) {
+                    retrievalPromises.push(Promise.resolve({ 
+                        agent: subAgentName, 
+                        result: state.findingsBoard.find(f => f.agent === subAgentName).content, 
+                        error: null 
+                    }));
+                    continue;
                 }
+
+                const prompt = `Execute your locked task: "${specificTask}".\n\n**CRITICAL INSTRUCTIONS:**\n1. You are connected to the Hermes Gateway. You HAVE FULL ACCESS to live web tools (e.g., browser_navigate, web_search). You MUST use them to fetch live data.\n2. NEVER apologize or claim you cannot access the internet. If you say you cannot access the internet, you will fail the mission.\n3. MAXIMUM 3 TOOL ATTEMPTS: If your tool returns an error, try an alternative URL. However, if you fail 3 times, you MUST STOP trying. Do not loop endlessly.\n4. If all 3 attempts fail, you MUST accept defeat and report 'TASK FAILED'.\n5. Do NOT hallucinate facts.\n\nOutput your findings strictly tagged with [CLAIM] your finding [/CLAIM] and [SOURCE] your source URL [/SOURCE].`;
+                
+                const cardDiv = document.createElement('div');
+                cardDiv.className = 'finding-card';
+                cardDiv.innerHTML = `
+                    <details open>
+                        <summary class="finding-source" style="cursor: pointer; font-weight: bold; padding-bottom: 5px; outline: none;">
+                            ${subAgentName} - ${specificTask.substring(0, 40)}${specificTask.length > 40 ? '...' : ''}
+                        </summary>
+                        <div class="finding-text" style="padding-top: 10px;">
+                            <div class="typing-indicator"><span></span><span></span><span></span></div>
+                        </div>
+                    </details>
+                `;
+                findingsContent.appendChild(cardDiv);
+                const textDiv = cardDiv.querySelector('.finding-text');
+                const detailsEl = cardDiv.querySelector('details');
+                const throttler = new MarkdownThrottler(textDiv, thisContainer);
+                
+                const p = streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
+                    throttler.update(chunk);
+                    runStore.emit('stream.delta', { agentKey: subAgentName, chunk: chunk });
+                    throttledSaveSession(thisSessionId, thisHistory, runStore);
+                }, thisContainer).then(result => {
+                    throttler.flush();
+                    // Auto-close the details section once it finishes to save screen space, unless there's an error
+                    if (!result.error) {
+                        detailsEl.removeAttribute('open');
+                    }
+                    runStore.emit('stream.end', { agentKey: subAgentName });
+                    runStore.emit('agent.finding', { agent: subAgentName, content: result.content || result.error });
+                    saveSession(thisSessionId, thisHistory, runStore);
+                    return { agent: subAgentName, result: result.content, error: result.error };
+                });
+                
+                retrievalPromises.push(p);
             }
             
             await Promise.all(retrievalPromises);
@@ -811,7 +897,7 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
                 const cpTextDiv = cpDiv.querySelector('.agent-text');
                 const throttler = new MarkdownThrottler(cpTextDiv, thisContainer);
                 
-                const cpPrompt = `Review the EVIDENCE FOUND. Identify: 1. Conflicting claims. 2. Missing evidence required to fully answer the user's request. Output CONSENSUS: TRUE if we have enough verified data to proceed to final synthesis. Output CONSENSUS: FALSE and list the missing evidence if we need another retrieval pass.`;
+                const cpPrompt = `Review the EVIDENCE FOUND. The data comes from live web scraping, so sources may naturally conflict or lack perfect metadata. Do NOT be overly strict. As long as the evidence has a valid source attached to it, that is enough to proceed. Output CONSENSUS: TRUE if we have sourced information, even if it is imperfect. Only output CONSENSUS: FALSE if the evidence is completely empty or completely lacks sources.`;
                 
                 const cpResult = await streamChat(evaluatorKey, [...thisHistory, { role: 'user', content: cpPrompt }], (chunk) => {
                     throttler.update(chunk);
@@ -840,8 +926,18 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
                         const cardDiv = document.createElement('div');
                         cardDiv.className = 'finding-card';
                         cardDiv.style.border = '1px solid rgba(245, 158, 11, 0.4)';
-                        cardDiv.innerHTML = `<div class="finding-source">${agentName} (Follow-up)</div><div class="finding-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+                        cardDiv.innerHTML = `
+                            <details open>
+                                <summary class="finding-source" style="cursor: pointer; font-weight: bold; padding-bottom: 5px; outline: none; color: rgba(245, 158, 11, 0.9);">
+                                    ${agentName} (Follow-up)
+                                </summary>
+                                <div class="finding-text" style="padding-top: 10px;">
+                                    <div class="typing-indicator"><span></span><span></span><span></span></div>
+                                </div>
+                            </details>
+                        `;
                         findingsContent.appendChild(cardDiv);
+                        const detailsEl = cardDiv.querySelector('details');
                         
                         const textDiv = cardDiv.querySelector('.finding-text');
                         const followupThrottler = new MarkdownThrottler(textDiv, thisContainer);
@@ -853,6 +949,9 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
                         }, thisContainer);
                         
                         followupThrottler.flush();
+                        if (!result.error) {
+                            detailsEl.removeAttribute('open');
+                        }
                         runStore.emit('stream.end', { agentKey: agentName + ' (Follow-up)' });
                         runStore.emit('agent.finding', { agent: agentName + ' (Follow-up)', content: result.content });
                         saveSession(thisSessionId, thisHistory, runStore);
@@ -882,8 +981,18 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
                             const cardDiv = document.createElement('div');
                             cardDiv.className = 'finding-card';
                             cardDiv.style.border = '1px solid rgba(245, 158, 11, 0.4)';
-                            cardDiv.innerHTML = `<div class="finding-source">${agentName} (Follow-up)</div><div class="finding-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+                            cardDiv.innerHTML = `
+                                <details open>
+                                    <summary class="finding-source" style="cursor: pointer; font-weight: bold; padding-bottom: 5px; outline: none; color: rgba(245, 158, 11, 0.9);">
+                                        ${agentName} (Follow-up)
+                                    </summary>
+                                    <div class="finding-text" style="padding-top: 10px;">
+                                        <div class="typing-indicator"><span></span><span></span><span></span></div>
+                                    </div>
+                                </details>
+                            `;
                             findingsContent.appendChild(cardDiv);
+                            const detailsEl = cardDiv.querySelector('details');
                             
                             const textDiv = cardDiv.querySelector('.finding-text');
                             const followupThrottler = new MarkdownThrottler(textDiv, thisContainer);
@@ -895,6 +1004,9 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
                             }, thisContainer);
                             
                             followupThrottler.flush();
+                            if (!result.error) {
+                                detailsEl.removeAttribute('open');
+                            }
                             runStore.emit('stream.end', { agentKey: agentName + ' (Follow-up)' });
                             runStore.emit('agent.finding', { agent: agentName + ' (Follow-up)', content: result.content });
                             saveSession(thisSessionId, thisHistory, runStore);
@@ -924,7 +1036,7 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
             
             const synthMessages = [...thisHistory, { 
                 role: "user", 
-                content: `SYSTEM INSTRUCTION: You are the final Synthesist. Draft the final response to the user's original request using ONLY the verified data from the findings board:\n${fullFindings}\n\nENSURE you preserve and include clickable markdown links [Title](url).`
+                content: `SYSTEM INSTRUCTION: You are the final Synthesist. Draft the final response to the user's original request using ONLY the verified data from the findings board:\n${fullFindings}\n\nCRITICAL: You are NOT allowed to use any web or browser tools. Do not attempt to run tools if the subagents failed. If the data is insufficient or corrupted (e.g. BodyStreamBuffer errors), simply apologize to the user and summarize what went wrong. ENSURE you preserve and include clickable markdown links [Title](url).`
             }];
             
             const evaluatorKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
@@ -939,7 +1051,7 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
             const latency_ms = performance.now() - synthStart;
             const token_count = Math.round((finalResult.content || '').length / 4);
             
-            thisHistory.push({ role: "assistant", content: finalResult.content });
+            thisHistory.push({ role: "assistant", content: finalResult.content || `[Synthesis Error]: ${finalResult.error || 'Failed'}` });
             runStore.emit('stream.end', { agentKey: 'synthesis' });
             runStore.emit('phase.transition', { status: 'complete' });
             
@@ -951,7 +1063,7 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
             
             state = runStore.getState();
             const successRate = finalResult.content && finalResult.content.includes('TASK FAILED') ? 0.2 : 1.0;
-            fetch('http://localhost:3000/api/evals/submit', {
+            fetch('http://localhost:3005/api/evals/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1045,7 +1157,7 @@ async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
     setAgentStatus(agentKey, "Processing...", true);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(new Error("Absolute 30s timeout reached")), 30000);
+    const timeoutId = setTimeout(() => controller.abort(new Error("Absolute 300s timeout reached")), 300000);
     
     let stalledInterval;
 
@@ -1109,7 +1221,10 @@ async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
                         try {
                             const data = JSON.parse(trimmedLine.substring(6));
                             if (data.tool_name) {
-                                appendToolCall(AGENTS[agentKey].name, data.tool_name, toolContainer);
+                                // Inject tool execution block directly into the chat stream so it persists in history
+                                const toolHtml = `\n<div class="tool-call-block"><div class="tool-header"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 16 16 12 12 8"></polyline><line x1="8" y1="12" x2="16" y2="12"></line></svg>⚡ <strong>${AGENTS[agentKey].name}</strong> executing tool: <code>${data.tool_name}</code></div></div>\n`;
+                                fullText += toolHtml;
+                                if (onChunk) onChunk(fullText);
                             }
                         } catch(e) {}
                     } else if (currentEvent === 'heartbeat') {
@@ -1161,7 +1276,7 @@ async function autoResearchTask(finalAnswer) {
             DEFAULT_SYSTEM_PROMPT,
             { role: 'user', content: researchPrompt }
         ], "hidden");
-        await fetch('http://localhost:3000/api/research/log', {
+        await fetch('http://localhost:3005/api/research/log', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ question: result, source: 'auto' })
@@ -1289,7 +1404,7 @@ function renderEvoGrid() {
     if (!evoGridCore) return;
     
     // Attempt to fetch live data if it hasn't been fetched yet
-    fetch('http://localhost:3000/api/dashboard/evolution')
+    fetch('http://localhost:3005/api/dashboard/evolution')
         .then(res => res.json())
         .then(json => {
             if (json.data) {
@@ -1383,7 +1498,7 @@ async function fetchDashboardData(endpoint, containerId) {
     if (!container) return;
     
     try {
-        const response = await fetch(`http://localhost:3000${endpoint}`);
+        const response = await fetch(`http://localhost:3005${endpoint}`);
         const result = await response.json();
         
         if (result.status === 'table_missing') {
@@ -1442,7 +1557,7 @@ if (triggerMutateBtn) {
             // Pick a random spot for the new mutation to land (0-4)
             const rx = Math.floor(Math.random() * 5);
             const ry = Math.floor(Math.random() * 5);
-            await fetch('http://localhost:3000/api/evolution/mutate', {
+            await fetch('http://localhost:3005/api/evolution/mutate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ x: rx, y: ry })
