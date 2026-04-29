@@ -10,12 +10,12 @@ def simulate_frontend_history_builder():
     # 1. User Input
     history.append({"role": "user", "content": "Find me the top news."})
     
-    # 2. Planning Phase 1 & 2
+    # 2. Planning Phase
     state = {
         "planningBoard": {
-            "finalAssignments": {
-                "dgx_spark_2": "I'll take the Scout role.",
-                "jetson": "I will aggregate finance news."
+            "delegations": {
+                "dgx_spark_2": "DGX Spark 2: Search for tech news. Jetson: Search for finance news.",
+                "jetson": "DGX Spark 2: Search for tech news. Jetson: Search for finance news."
             }
         },
         "findingsBoard": [
@@ -30,15 +30,13 @@ def simulate_frontend_history_builder():
     }
     
     # Simulate app.js line 782 (Inject TEAM PLAN LOCK)
-    teamPlanContext = "TEAM PLAN LOCK:\n"
-    for k in activeAgents:
-        teamPlanContext += f"- {AGENTS[k]['name']}: {state['planningBoard']['finalAssignments'][k]}\n"
+    teamPlanContext = "TEAM PLAN LOCK:\n" + state['planningBoard']['delegations'][activeAgents[0]]
     history.append({"role": "system", "content": teamPlanContext})
     
     # Verify Planning Injection
     assert len(history) == 3
     assert "TEAM PLAN LOCK:" in history[-1]["content"]
-    assert "DGX Spark 2 (Primary): I'll take the Scout role." in history[-1]["content"]
+    assert "DGX Spark 2: Search for tech news." in history[-1]["content"]
     
     # Simulate app.js line 854 (Inject EVIDENCE FOUND)
     findingsContext = "EVIDENCE FOUND:\n"

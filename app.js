@@ -48,8 +48,8 @@ class RunStore {
     getState() {
         let state = {
             objective: this.objective,
-            status: "planning_round_1",
-            planningBoard: { round1Proposals: {}, finalAssignments: {} },
+            status: "planning",
+            planningBoard: { delegations: {} },
             findingsBoard: [],
             checkpointBoard: { analysis: null, missingEvidence: [], conflicts: [], consensusReached: false },
             partialStreams: {},
@@ -62,10 +62,8 @@ class RunStore {
                 state.objective = ev.data.objective;
             } else if (ev.type === 'phase.transition') {
                 state.status = ev.data.status;
-            } else if (ev.type === 'agent.plan.round1') {
-                state.planningBoard.round1Proposals[ev.data.agentKey] = ev.data.content;
-            } else if (ev.type === 'agent.plan.round2') {
-                state.planningBoard.finalAssignments[ev.data.agentKey] = ev.data.content;
+            } else if (ev.type === 'agent.plan.delegation') {
+                state.planningBoard.delegations = ev.data.delegations;
             } else if (ev.type === 'agent.finding') {
                 state.findingsBoard.push({ agent: ev.data.agent, content: ev.data.content });
             } else if (ev.type === 'checkpoint.analysis') {
@@ -91,13 +89,8 @@ class RunStore {
         } else if (data.status) {
             // Legacy migration
             store.emit('run.started', { objective: data.objective });
-            if (data.planningBoard) {
-                for (const [k, v] of Object.entries(data.planningBoard.round1Proposals || {})) {
-                    store.emit('agent.plan.round1', { agentKey: k, content: v });
-                }
-                for (const [k, v] of Object.entries(data.planningBoard.finalAssignments || {})) {
-                    store.emit('agent.plan.round2', { agentKey: k, content: v });
-                }
+            if (data.planningBoard && data.planningBoard.delegations) {
+                store.emit('agent.plan.delegation', { delegations: data.planningBoard.delegations });
             }
             if (data.findingsBoard) {
                 data.findingsBoard.forEach(f => store.emit('agent.finding', f));
@@ -170,13 +163,12 @@ function updateTimelineUI(state) {
         return;
     }
 
-    const steps = ['start', 'plan1', 'plan2', 'retrieval', 'checkpoint', 'synthesis'];
+    const steps = ['start', 'planning', 'retrieval', 'checkpoint', 'synthesis'];
     let currentFound = false;
 
     // Map state.status to steps
     const statusMap = {
-        'planning_round_1': 'plan1',
-        'planning_round_2': 'plan2',
+        'planning': 'planning',
         'retrieval': 'retrieval',
         'checkpoint': 'checkpoint',
         'synthesis': 'synthesis',
@@ -220,8 +212,7 @@ function updateAgentPills(state) {
         let statusText = 'Standing by';
         let statusClass = 'standing-by';
         
-        if (state.status === 'planning_round_1') { statusText = 'Planning'; statusClass = 'planning'; }
-        if (state.status === 'planning_round_2') { statusText = 'Committing'; statusClass = 'planning'; }
+        if (state.status === 'planning') { statusText = 'Task Delegation'; statusClass = 'planning'; }
         if (state.status === 'retrieval') { statusText = 'Retrieving'; statusClass = 'retrieving'; }
         if (state.status === 'checkpoint' && agentKey === 'dgx_spark_2') { statusText = 'Evaluating'; statusClass = 'evaluating'; }
         if (state.status === 'synthesis' && agentKey === 'dgx_spark_2') { statusText = 'Synthesizing'; statusClass = 'synthesizing'; }
@@ -364,9 +355,8 @@ function restoreStoryboard(runStore, container, sessionId) {
     const storyboardMsg = appendMessage('system', '', 'Mission Storyboard', true, container);
     
     // Determine status text/color based on state.status
-    let planStatus = "Round 1 (Proposals)";
+    let planStatus = "Task Delegation";
     let planColor = "";
-    if (state.status === "planning_round_2") planStatus = "Round 2 (Commitment)";
     if (["retrieval", "checkpoint", "synthesis", "complete"].includes(state.status)) {
         planStatus = "Locked";
         planColor = "color: #10b981; animation: none;";
@@ -408,25 +398,13 @@ function restoreStoryboard(runStore, container, sessionId) {
     // Populate Planning Board
     const planContent = storyboardMsg.querySelector(`#planning-board-${sessionId} .board-content`);
     
-    if (["planning_round_1"].includes(state.status)) {
-        Object.entries(state.planningBoard.round1Proposals || {}).forEach(([agentKey, text]) => {
-            const agentName = AGENTS[agentKey]?.name || agentKey;
-            const div = document.createElement('div');
-            div.className = 'agent-contribution';
-            div.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text">${marked.parse(text || '')}</div>`;
-            planContent.appendChild(div);
-        });
-        
-    } else {
-        Object.entries(state.planningBoard.finalAssignments || {}).forEach(([agentKey, text]) => {
-            const agentName = AGENTS[agentKey]?.name || agentKey;
-            const div = document.createElement('div');
-            div.className = 'agent-contribution';
-            div.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text">${marked.parse(text || '')}</div>`;
-            planContent.appendChild(div);
-        });
-        
-    }
+    Object.entries(state.planningBoard.delegations || {}).forEach(([agentKey, text]) => {
+        const agentName = AGENTS[agentKey]?.name || agentKey;
+        const div = document.createElement('div');
+        div.className = 'agent-contribution';
+        div.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text">${marked.parse(text || '')}</div>`;
+        planContent.appendChild(div);
+    });
 
     // Populate Findings Board
     if (findingsDisplay === "flex") {
@@ -699,74 +677,38 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
     try {
         let state = runStore.getState();
 
-        if (state.status === "planning_round_1") {
-            planningStatus.innerText = "Round 1 (Proposals)";
-            const round1Promises = activeAgents.map(async (agentKey) => {
-                state = runStore.getState();
-                if (state.planningBoard.round1Proposals[agentKey]) {
-                    return { agentKey, name: AGENTS[agentKey].name, content: state.planningBoard.round1Proposals[agentKey] };
+        if (state.status === "planning") {
+            planningStatus.innerText = "Task Delegation";
+            
+            const coordinatorKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
+            const coordinatorName = AGENTS[coordinatorKey].name;
+            
+            state = runStore.getState();
+            if (!state.planningBoard.delegations || Object.keys(state.planningBoard.delegations).length === 0) {
+                const prompt = `MISSION: "${text}".\n\nYou are the Coordinator. Break down this mission into distinct, non-overlapping search tasks for the team (${activeAgents.map(k => AGENTS[k].name).join(', ')}). Output the assignments clearly so each agent knows their specific target.`;
+                
+                const agentDiv = document.createElement('div');
+                agentDiv.className = 'agent-contribution';
+                agentDiv.innerHTML = `<div class="agent-role">${coordinatorName} (Coordinator)</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
+                planningContent.appendChild(agentDiv);
+                const textDiv = agentDiv.querySelector('.agent-text');
+                const throttler = new MarkdownThrottler(textDiv, thisContainer);
+                
+                const result = await streamChat(coordinatorKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
+                    throttler.update(chunk);
+                    runStore.emit('stream.delta', { agentKey: coordinatorKey, chunk: chunk });
+                    throttledSaveSession(thisSessionId, thisHistory, runStore);
+                }, thisContainer);
+                
+                throttler.flush();
+                runStore.emit('stream.end', { agentKey: coordinatorKey });
+                
+                const delegations = {};
+                for (const ak of activeAgents) {
+                    delegations[ak] = result.content;
                 }
-
-                const agentName = AGENTS[agentKey].name;
-                const prompt = `MISSION: "${text}". Propose a soft role (Scout, Analyst, or Synthesist) and a 1-sentence strategy for what you will investigate. DO NOT execute tools yet.`;
                 
-                const agentDiv = document.createElement('div');
-                agentDiv.className = 'agent-contribution';
-                agentDiv.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
-                planningContent.appendChild(agentDiv);
-                const textDiv = agentDiv.querySelector('.agent-text');
-                const throttler = new MarkdownThrottler(textDiv, thisContainer);
-                
-                const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
-                    throttler.update(chunk);
-                    runStore.emit('stream.delta', { agentKey: agentKey, chunk: chunk });
-                    throttledSaveSession(thisSessionId, thisHistory, runStore);
-                }, thisContainer);
-                
-                throttler.flush();
-                runStore.emit('stream.end', { agentKey: agentKey });
-                runStore.emit('agent.plan.round1', { agentKey: agentKey, content: result.content });
-                saveSession(thisSessionId, thisHistory, runStore);
-                return { agentKey, name: agentName, content: result.content };
-            });
-            
-            await Promise.all(round1Promises);
-            runStore.emit('phase.transition', { status: 'planning_round_2' });
-            saveSession(thisSessionId, thisHistory, runStore);
-        }
-
-        state = runStore.getState();
-        if (state.status === "planning_round_2") {
-            planningStatus.innerText = "Round 2 (Commitment)";
-            
-            let round1Context = "ROUND 1 PROPOSALS:\n";
-            Object.entries(state.planningBoard.round1Proposals).forEach(([ak, content]) => {
-                round1Context += `- ${AGENTS[ak]?.name || ak}: ${content}\n`;
-            });
-            
-            for (const agentKey of activeAgents) {
-                state = runStore.getState();
-                if (state.planningBoard.finalAssignments[agentKey]) continue;
-
-                const agentName = AGENTS[agentKey].name;
-                const prompt = `MISSION: "${text}".\n\n${round1Context}\n\nBased on the team's proposals, lock in your final role and specific task assignment. If someone else took your target, PIVOT to a new non-overlapping target. Output your final 1-sentence commitment.`;
-                
-                const agentDiv = document.createElement('div');
-                agentDiv.className = 'agent-contribution';
-                agentDiv.innerHTML = `<div class="agent-role">${agentName}</div><div class="agent-text"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
-                planningContent.appendChild(agentDiv);
-                const textDiv = agentDiv.querySelector('.agent-text');
-                const throttler = new MarkdownThrottler(textDiv, thisContainer);
-                
-                const result = await streamChat(agentKey, [...thisHistory, { role: 'user', content: prompt }], (chunk) => {
-                    throttler.update(chunk);
-                    runStore.emit('stream.delta', { agentKey: agentKey, chunk: chunk });
-                    throttledSaveSession(thisSessionId, thisHistory, runStore);
-                }, thisContainer);
-                
-                throttler.flush();
-                runStore.emit('stream.end', { agentKey: agentKey });
-                runStore.emit('agent.plan.round2', { agentKey: agentKey, content: result.content });
+                runStore.emit('agent.plan.delegation', { delegations: delegations });
                 saveSession(thisSessionId, thisHistory, runStore);
             }
             
@@ -778,8 +720,7 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
             saveSession(thisSessionId, thisHistory, runStore);
             state = runStore.getState();
             
-            let teamPlanContext = "TEAM PLAN LOCK:\n";
-            activeAgents.forEach(k => teamPlanContext += `- ${AGENTS[k]?.name || k}: ${state.planningBoard.finalAssignments[k]}\n`);
+            let teamPlanContext = "TEAM PLAN LOCK:\n" + state.planningBoard.delegations[activeAgents[0]];
             thisHistory.push({ role: 'system', content: teamPlanContext });
         }
 
@@ -788,8 +729,7 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
             findingsBoard.style.display = 'flex';
             
             if (!thisHistory.find(h => h.role === 'system' && h.content && h.content.startsWith("TEAM PLAN LOCK"))) {
-                let teamPlanContext = "TEAM PLAN LOCK:\n";
-                activeAgents.forEach(k => teamPlanContext += `- ${AGENTS[k]?.name || k}: ${state.planningBoard.finalAssignments[k]}\n`);
+                let teamPlanContext = "TEAM PLAN LOCK:\n" + state.planningBoard.delegations[activeAgents[0]];
                 thisHistory.push({ role: 'system', content: teamPlanContext });
             }
 
