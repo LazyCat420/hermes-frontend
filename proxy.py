@@ -127,6 +127,33 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
 
+        if self.path == "/api/research/log":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length))
+            question = body.get('question', '')
+            source = body.get('source', 'auto')
+            
+            try:
+                conn = psycopg2.connect(DB_URL)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO auto_research_logs (task_description, outcome, turns_taken)
+                    VALUES (%s, %s, %s)
+                """, (question, source, 1))
+                conn.commit()
+                conn.close()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "success"}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
+
         if self.path == "/api/tools/search":
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length)

@@ -57,14 +57,18 @@ def init_db():
 
         # Seeding baseline archetypes
         print("Seeding baseline MAP-Elites archetypes...")
+        
+        # Suffix added to all archetypes to ensure source citations
+        citation_rule = " ALWAYS cite your sources using clickable markdown links, e.g., [Title](url), so the user can verify the data."
+        
         archetypes = [
-            (0, 0, "Static Recall", False, 0.42, "8k", 0.1, 0.9, "strict", "You are a precise recall agent. Rely strictly on retrieved context. Do not invent details."),
-            (4, 4, "Chaotic Oracle", True, 0.91, "128k", 0.9, 0.95, "exploratory", "You are a chaotic oracle. Synthesize wildly disparate ideas. Use all tools at your disposal to explore the unknown."),
-            (2, 2, "Balanced Guide", True, 0.85, "32k", 0.5, 0.9, "adaptive", "You are a balanced guide. Weigh context carefully against prior knowledge. Be helpful and clear."),
-            (0, 4, "Rapid Innovator", False, 0.65, "8k", 0.8, 0.9, "exploratory", "You are a rapid innovator. Iterate quickly, use tools efficiently, and try unconventional approaches within small context limits."),
-            (4, 0, "Deep Archivist", True, 0.88, "128k", 0.2, 0.9, "strict", "You are a deep archivist. Scour massive contexts with absolute precision. Never hallucinate."),
-            (1, 1, "Cautious Assistant", False, 0.55, "16k", 0.3, 0.9, "strict", "You are a cautious assistant. Only act when certain. Do not overstep your instructions."),
-            (3, 3, "Creative Partner", True, 0.82, "64k", 0.7, 0.9, "adaptive", "You are a creative partner. Suggest alternative perspectives and use tools to enrich the user's workflow.")
+            (0, 0, "Static Recall", False, 0.42, "8k", 0.1, 0.9, "strict", "You are a precise recall agent. Rely strictly on retrieved context. Do not invent details." + citation_rule),
+            (4, 4, "Chaotic Oracle", True, 0.91, "128k", 0.9, 0.95, "exploratory", "You are a chaotic oracle. Synthesize wildly disparate ideas. Use all tools at your disposal to explore the unknown." + citation_rule),
+            (2, 2, "Balanced Guide", True, 0.85, "32k", 0.5, 0.9, "adaptive", "You are a balanced guide. Weigh context carefully against prior knowledge. Be helpful and clear." + citation_rule),
+            (0, 4, "Rapid Innovator", False, 0.65, "8k", 0.8, 0.9, "exploratory", "You are a rapid innovator. Iterate quickly, use tools efficiently, and try unconventional approaches within small context limits." + citation_rule),
+            (4, 0, "Deep Archivist", True, 0.88, "128k", 0.2, 0.9, "strict", "You are a deep archivist. Scour massive contexts with absolute precision. Never hallucinate." + citation_rule),
+            (1, 1, "Cautious Assistant", False, 0.55, "16k", 0.3, 0.9, "strict", "You are a cautious assistant. Only act when certain. Do not overstep your instructions." + citation_rule),
+            (3, 3, "Creative Partner", True, 0.82, "64k", 0.7, 0.9, "adaptive", "You are a creative partner. Suggest alternative perspectives and use tools to enrich the user's workflow." + citation_rule)
         ]
 
         for arch in archetypes:

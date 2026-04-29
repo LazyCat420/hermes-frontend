@@ -8,18 +8,23 @@ const AGENTS = {
 // Persistence State
 const STORAGE_KEY = 'hermes_sessions';
 let currentSessionId = null;
-const DEFAULT_SYSTEM_PROMPT = {
+let DEFAULT_SYSTEM_PROMPT = {
     role: "system",
-    content: "You are part of a 3-agent swarm (Jetson, DGX1, DGX2). Coordinate and execute tasks intelligently. If your tool fails or you cannot complete your task, explicitly include the exact phrase 'TASK FAILED' in your response so other agents can step in."
+    content: "You are part of a 3-agent swarm (Jetson, DGX1, DGX2). Coordinate and execute tasks intelligently. If your tool fails or you cannot complete your task, explicitly include the exact phrase 'TASK FAILED' in your response so other agents can step in. ALWAYS cite your sources using clickable markdown links, e.g., [Title](url), so the user can verify the data."
 };
 let globalHistory = [DEFAULT_SYSTEM_PROMPT];
+let activeArchetype = { x: 0, y: 0 };
+let liveArchetypes = [];
 
 // UI Elements
-const chatHistory = document.getElementById('chatHistory');
+const chatContainerWrapper = document.getElementById('chatContainerWrapper');
 const chatForm = document.getElementById('chatForm');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const newChatBtn = document.getElementById('newChatBtn');
+
+const sessionDOMs = {};
+const processingSessions = {};
 
 // Configure marked to handle links and line breaks
 marked.use({
@@ -28,7 +33,7 @@ marked.use({
 });
 
 // Intercept link clicks to open in a new tab safely
-chatHistory.addEventListener('click', (e) => {
+chatContainerWrapper.addEventListener('click', (e) => {
     const link = e.target.closest('a');
     if (link) {
         e.preventDefault();
@@ -80,21 +85,23 @@ function deleteSession(id, event) {
     }
 }
 
-function saveCurrentSession() {
+function saveSession(id, history, customTitle = null) {
     const sessions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    const existingIndex = sessions.findIndex(s => s.id === currentSessionId);
+    const existingIndex = sessions.findIndex(s => s.id === id);
     
-    let title = "New Chat";
-    const firstUserMsg = globalHistory.find(m => m.role === 'user' && !m.content.startsWith('SYSTEM'));
-    if (firstUserMsg) {
-        title = firstUserMsg.content.substring(0, 30) + (firstUserMsg.content.length > 30 ? '...' : '');
+    let title = customTitle || "New Chat";
+    if (!customTitle) {
+        const firstUserMsg = history.find(m => m.role === 'user' && !m.content.startsWith('SYSTEM'));
+        if (firstUserMsg) {
+            title = firstUserMsg.content.substring(0, 30) + (firstUserMsg.content.length > 30 ? '...' : '');
+        }
     }
 
     const sessionData = {
-        id: currentSessionId,
+        id: id,
         title: title,
-        date: Date.now(),
-        history: globalHistory
+        date: existingIndex >= 0 ? sessions[existingIndex].date : Date.now(),
+        history: history
     };
 
     if (existingIndex >= 0) {
@@ -104,7 +111,28 @@ function saveCurrentSession() {
     }
     
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
-    loadSessionsFromStorage();
+    if (id === currentSessionId) loadSessionsFromStorage();
+}
+
+function saveCurrentSession() {
+    saveSession(currentSessionId, globalHistory);
+}
+
+function switchChatContainer(id) {
+    Object.values(sessionDOMs).forEach(el => el.style.display = 'none');
+    
+    if (!sessionDOMs[id]) {
+        const div = document.createElement('div');
+        div.className = 'chat-history';
+        div.id = `chatHistory-${id}`;
+        chatContainerWrapper.appendChild(div);
+        sessionDOMs[id] = div;
+    }
+    
+    sessionDOMs[id].style.display = 'flex';
+    sessionDOMs[id].scrollTop = sessionDOMs[id].scrollHeight;
+    
+    sendBtn.disabled = !!processingSessions[id];
 }
 
 function loadSession(id) {
@@ -112,21 +140,31 @@ function loadSession(id) {
     const session = sessions.find(s => s.id === id);
     if (session) {
         currentSessionId = id;
-        globalHistory = session.history;
-        renderHistory();
+        switchChatContainer(id);
+        
+        if (!processingSessions[id]) {
+            globalHistory = session.history;
+            renderHistory();
+        } else {
+            globalHistory = session.history;
+        }
+        
         loadSessionsFromStorage();
     }
 }
 
 function startNewChat() {
     currentSessionId = generateId();
+    switchChatContainer(currentSessionId);
     globalHistory = [DEFAULT_SYSTEM_PROMPT];
     renderHistory();
     saveCurrentSession();
 }
 
 function renderHistory() {
-    chatHistory.innerHTML = '<div class="system-message">System initialized. Connected to Hermes Hub.</div>';
+    const container = sessionDOMs[currentSessionId];
+    if (!container) return;
+    container.innerHTML = '<div class="system-message">System initialized. Connected to Hermes Hub.</div>';
     globalHistory.forEach(msg => {
         if (msg.role === 'system' && msg.content === DEFAULT_SYSTEM_PROMPT.content) return; // skip initial prompt
         
@@ -136,16 +174,36 @@ function renderHistory() {
         if (msg.role === 'assistant') senderName = 'Hermes Orchestrator';
         
         if (msg.displayContent) {
-            appendMessage(msg.role, msg.displayContent, senderName, true);
+            appendMessage(msg.role, msg.displayContent, senderName, true, container);
         } else {
-            appendMessage(msg.role, msg.content, senderName, false);
+            appendMessage(msg.role, msg.content, senderName, false, container);
         }
     });
-    chatHistory.scrollTop = chatHistory.scrollHeight;
+    container.scrollTop = container.scrollHeight;
 }
 
 // Initialization
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // Phase 1/3: Fetch live evolution data and set active archetype / prompt
+    try {
+        const res = await fetch('http://localhost:3000/api/dashboard/evolution');
+        const json = await res.json();
+        if (json.data && json.data.length > 0) {
+            liveArchetypes = json.data;
+            const elites = liveArchetypes.filter(a => a.is_elite).sort((a, b) => b.score - a.score);
+            const best = elites.length > 0 ? elites[0] : liveArchetypes[0];
+            activeArchetype = { x: best.x, y: best.y };
+            if (best.system_prompt) {
+                DEFAULT_SYSTEM_PROMPT.content = best.system_prompt;
+                if (globalHistory.length > 0 && globalHistory[0].role === 'system') {
+                    globalHistory[0].content = best.system_prompt;
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Failed to fetch initial evolution data", e);
+    }
+
     const sessions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
     if (sessions.length > 0) {
         currentSessionId = sessions[0].id; // load most recent
@@ -184,21 +242,32 @@ chatForm.addEventListener('submit', async (e) => {
 
     messageInput.value = '';
     messageInput.style.height = 'auto';
-    sendBtn.disabled = true;
 
-    appendMessage('user', text);
-    globalHistory.push({ role: 'user', content: text });
-    saveCurrentSession();
+    // Capture state for this background run
+    const thisSessionId = currentSessionId;
+    const thisContainer = sessionDOMs[thisSessionId];
+    let thisHistory = [...globalHistory];
+    
+    processingSessions[thisSessionId] = true;
+    if (currentSessionId === thisSessionId) {
+        sendBtn.disabled = true;
+    }
+
+    appendMessage('user', text, 'You', false, thisContainer);
+    thisHistory.push({ role: 'user', content: text });
+    saveSession(thisSessionId, thisHistory);
+    
+    if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
 
     const activeAgents = getActiveAgents();
 
-    const huddleContainer = appendMessage('system', '<strong>STRATEGY HUDDLE IN PROGRESS...</strong><div id="huddle-blocks" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;"></div>', 'System', true);
-    const huddleBlocks = huddleContainer.querySelector('#huddle-blocks');
+    const huddleContainer = appendMessage('system', '<strong>STRATEGY HUDDLE IN PROGRESS...</strong><div class="huddle-blocks" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;"></div>', 'System', true, thisContainer);
+    const huddleBlocks = huddleContainer.querySelector('.huddle-blocks');
 
     let currentHuddleContext = "";
     const strategies = [];
 
-    // Sequential Huddle so agents can read previous proposals and avoid overlap
+    // Sequential Huddle
     for (const agentKey of activeAgents) {
         const agentName = AGENTS[agentKey].name;
         
@@ -215,18 +284,21 @@ chatForm.addEventListener('submit', async (e) => {
         let contextPrompt = `SYSTEM HUDDLE: You are ${agentName}. Before executing any tools, propose a brief 1-sentence strategy for how you will help answer the user's latest request. Do NOT execute tools yet. Just state your plan.`;
         
         if (currentHuddleContext !== "") {
-            contextPrompt = `SYSTEM HUDDLE: You are ${agentName}. Here is what the other agents have proposed so far:\n${currentHuddleContext}\n\nPlease propose a brief 1-sentence strategy for how YOU will help answer the user's request. **CRITICAL: You must choose a DIFFERENT, non-overlapping approach or target different data sources from the agents above.** Do NOT execute tools yet. Just state your plan.`;
+            contextPrompt = `SYSTEM HUDDLE: You are ${agentName}. Here is what the other agents have proposed so far:
+${currentHuddleContext}
+
+Please propose a brief 1-sentence strategy for how YOU will help answer the user's request. **CRITICAL: You must choose a DIFFERENT, non-overlapping approach or target different data sources from the agents above.** Do NOT execute tools yet. Just state your plan.`;
         }
         
-        const huddleMessages = [...globalHistory, {
+        const huddleMessages = [...thisHistory, {
             role: "user", 
             content: contextPrompt
         }];
         
         const result = await streamChat(agentKey, huddleMessages, (text) => {
             textDiv.innerHTML = marked.parse(text);
-            chatHistory.scrollTop = chatHistory.scrollHeight;
-        });
+            thisContainer.scrollTop = thisContainer.scrollHeight;
+        }, thisContainer);
         
         const finalStrategy = result.content || result.error;
         strategies.push({ agent: agentName, strategy: finalStrategy });
@@ -234,39 +306,39 @@ chatForm.addEventListener('submit', async (e) => {
     }
 
     let huddleSummary = "**STRATEGY HUDDLE COMPLETE:**\n\n";
-    let staticHuddleHtml = `<strong>STRATEGY HUDDLE COMPLETE</strong><div id="huddle-blocks" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">`;
+    let staticHuddleHtml = `<strong>STRATEGY HUDDLE COMPLETE</strong><div style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">`;
     strategies.forEach(s => {
         huddleSummary += `- **${s.agent}**: ${s.strategy}\n`;
         staticHuddleHtml += `
             <div style="background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 6px; border-left: 3px solid var(--text-secondary);">
                 <div style="font-size: 0.8rem; font-weight: bold; margin-bottom: 4px; color: var(--text-primary); text-transform: uppercase;">${s.agent}</div>
-                <div class="huddle-text" style="font-size: 0.9rem;">${marked.parse(s.strategy)}</div>
+                <div style="font-size: 0.9rem;">${marked.parse(s.strategy)}</div>
             </div>
         `;
     });
     staticHuddleHtml += `</div>`;
     
-    // We already have the live rendering, so we just update the global history silently
-    globalHistory.push({ 
+    thisHistory.push({ 
         role: "system", 
         content: huddleSummary + "\nNow, execute YOUR SPECIFIC PART of the strategy using your native tools to fulfill the user's original request. DO NOT duplicate the work of the other agents.",
         displayContent: staticHuddleHtml
     });
-    saveCurrentSession();
+    saveSession(thisSessionId, thisHistory);
+    if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
 
-    // 2. Real-time Scratchpad / Execution Phase
+    // Execution Phase
     const detailsWrapper = document.createElement('div');
     detailsWrapper.innerHTML = `
         <div class="agent-work-details">
             <div class="agent-work-summary" style="font-weight: bold; margin-bottom: 8px;">Live Agent Scratchpads (${activeAgents.length} agents)</div>
-            <div class="agent-work-content" id="live-scratchpads"></div>
+            <div class="agent-work-content live-scratchpads"></div>
         </div>
     `;
-    const scratchpadMsgDiv = appendMessage('system', '', 'Execution Phase', true);
+    const scratchpadMsgDiv = appendMessage('system', '', 'Execution Phase', true, thisContainer);
     scratchpadMsgDiv.innerHTML = '';
     scratchpadMsgDiv.appendChild(detailsWrapper);
     
-    const liveContentDiv = detailsWrapper.querySelector('#live-scratchpads');
+    const liveContentDiv = detailsWrapper.querySelector('.live-scratchpads');
 
     const execPromises = activeAgents.map(async (agentKey) => {
         const agentName = AGENTS[agentKey].name;
@@ -280,10 +352,10 @@ chatForm.addEventListener('submit', async (e) => {
         liveContentDiv.appendChild(blockDiv);
         const textDiv = blockDiv.querySelector('.individual-agent-text');
         
-        const result = await streamChat(agentKey, [...globalHistory], (text) => {
+        const result = await streamChat(agentKey, [...thisHistory], (text) => {
             textDiv.innerHTML = marked.parse(text);
-            chatHistory.scrollTop = chatHistory.scrollHeight;
-        }, blockDiv);
+            thisContainer.scrollTop = thisContainer.scrollHeight;
+        }, thisContainer);
         
         const content = result.content || result.error;
         const isError = result.type === 'error' || (content && (content.includes("Error:") || content.includes("TASK FAILED")));
@@ -305,25 +377,42 @@ chatForm.addEventListener('submit', async (e) => {
             }
         });
 
-        // Update the header after execution finishes
         detailsWrapper.querySelector('.agent-work-summary').innerText = `Individual Agent Scratchpads (${activeAgents.length} agents)`;
+
+        // Phase 4: Cross-Agent Critique Loop
+        const critiquePromises = activeAgents.map((agentKey, i) => {
+            const peerResult = results[(i + 1) % results.length];
+            const peerContent = (peerResult.result || "").substring(0, 500);
+            return orchestrateHidden(agentKey, [
+                ...thisHistory,
+                { role: 'user', content: `Peer review this answer from ${peerResult.agent}: "${peerContent}". Add anything missing or correct any errors in 2 sentences.` }
+            ]);
+        });
+        const critiques = await Promise.all(critiquePromises);
+        
+        critiques.forEach((critiqueResult, i) => {
+            const agentName = AGENTS[activeAgents[i]].name;
+            synthesizerContext += `--- [${agentName} Critique of Peer] ---\n${critiqueResult}\n\n`;
+        });
 
         // 3. Synthesizer Phase
         const synthesizerKey = activeAgents.includes('dgx_spark_2') ? 'dgx_spark_2' : activeAgents[0];
         const synthesizerMessages = [
-            ...globalHistory,
-            { role: "user", content: "SYSTEM INSTRUCTION: " + synthesizerContext + "\n\nPlease synthesize the above findings into one final, unified response to the user's original request. If the agents had questions for the user, consolidate them into ONE unified question at the end. Do not mention that you are summarizing other agents, just provide the final answer directly as Hermes Orchestrator." }
+            ...thisHistory,
+            { role: "user", content: "SYSTEM INSTRUCTION: " + synthesizerContext + "\n\nPlease synthesize the above findings into one final, unified response to the user's original request. If the agents had questions for the user, consolidate them into ONE unified question at the end. Do not mention that you are summarizing other agents, just provide the final answer directly as Hermes Orchestrator. ENSURE that you preserve and include clickable markdown links [Title](url) to the sources cited by the agents so the user can click them for more info." }
         ];
 
-        const finalContentDiv = appendMessage('assistant', '<div class="typing-indicator"><span></span><span></span><span></span></div>', 'Hermes Orchestrator');
+        const finalContentDiv = appendMessage('assistant', '<div class="typing-indicator"><span></span><span></span><span></span></div>', 'Hermes Orchestrator', false, thisContainer);
         
+        const synthStart = performance.now();
         const finalResult = await streamChat(synthesizerKey, synthesizerMessages, (text) => {
             finalContentDiv.innerHTML = marked.parse(text);
-            chatHistory.scrollTop = chatHistory.scrollHeight;
-        });
+            thisContainer.scrollTop = thisContainer.scrollHeight;
+        }, thisContainer);
+        const latency_ms = performance.now() - synthStart;
+        const token_count = Math.round((finalResult.content || '').length / 4);
 
         if (finalResult.type === 'text') {
-            // Build the static HTML for history preservation (so next page reload shows it)
             let staticScratchpadHtml = `<div class="agent-work-content">`;
             results.forEach(r => {
                 staticScratchpadHtml += `
@@ -342,40 +431,60 @@ chatForm.addEventListener('submit', async (e) => {
                 </div>
             `;
             
-            // We append the scratchpad to the final system message in the UI so the user always sees it
-            globalHistory.push({ 
+            thisHistory.push({ 
                 role: "assistant", 
-                content: finalResult.content + "\n\n" + `[Scratchpad Data Omitted from LLM Context]`,
+                content: finalResult.content + "\n\n[Scratchpad Data Omitted from LLM Context]",
                 displayContent: marked.parse(finalResult.content) + "\n\n" + detailsHtml
             });
-            saveCurrentSession();
+            saveSession(thisSessionId, thisHistory);
+            if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
+            
+            const successRate = finalResult.content && finalResult.content.includes('TASK FAILED') ? 0.2 : 1.0;
+            fetch('http://localhost:3000/api/evals/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    x: activeArchetype.x,
+                    y: activeArchetype.y,
+                    success_rate: successRate,
+                    tokens: token_count,
+                    latency: latency_ms
+                })
+            }).catch(e => console.error("Auto-eval failed:", e));
+            
+            autoResearchTask(finalResult.content || '');
         } else if (finalResult.type === 'error') {
             finalContentDiv.innerHTML = `<span style="color: #ef4444;">Error during synthesis: ${finalResult.error}</span>`;
-            globalHistory.push({ role: "assistant", content: `Error during synthesis: ${finalResult.error}` });
-            saveCurrentSession();
+            thisHistory.push({ role: "assistant", content: `Error during synthesis: ${finalResult.error}` });
+            saveSession(thisSessionId, thisHistory);
+            if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
         }
 
         if (hasFailure && activeAgents.length > 1) {
-            appendMessage('system', `<div class="typing-indicator" style="display:inline-block; margin-right: 10px;"><span></span><span></span><span></span></div> <i>Failure detected from ${failedAgents.join(', ')}. Initiating Recovery Phase...</i>`, 'System');
+            appendMessage('system', `<div class="typing-indicator" style="display:inline-block; margin-right: 10px;"><span></span><span></span><span></span></div> <i>Failure detected from ${failedAgents.join(', ')}. Initiating Recovery Phase...</i>`, 'System', true, thisContainer);
             
-            globalHistory.push({ role: "user", content: "SYSTEM ALERT: One or more agents encountered a failure. Can another agent try a different approach to solve the user's request?" });
-            saveCurrentSession();
+            thisHistory.push({ role: "user", content: "SYSTEM ALERT: One or more agents encountered a failure. Can another agent try a different approach to solve the user's request?" });
+            saveSession(thisSessionId, thisHistory);
+            if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
             
-            // In recovery, we can just use the hidden orchestrate so it doesn't spam too much, or we could stream it. We'll use hidden.
-            const recoveryResults = await Promise.all(activeAgents.map(ak => orchestrateHidden(ak, [...globalHistory])));
+            const recoveryResults = await Promise.all(activeAgents.map(ak => orchestrateHidden(ak, [...thisHistory], thisContainer)));
             
             let recoveryCombined = "";
             recoveryResults.forEach((res, i) => {
                 recoveryCombined += `[${AGENTS[activeAgents[i]].name}]: ${res}\n`;
             });
-            globalHistory.push({ role: "assistant", content: recoveryCombined });
-            saveCurrentSession();
+            thisHistory.push({ role: "assistant", content: recoveryCombined });
+            saveSession(thisSessionId, thisHistory);
+            if (currentSessionId === thisSessionId) globalHistory = [...thisHistory];
             
-            appendMessage('assistant', recoveryCombined, 'Hermes Orchestrator (Recovery)');
+            appendMessage('assistant', recoveryCombined, 'Hermes Orchestrator (Recovery)', false, thisContainer);
         }
 
-        sendBtn.disabled = false;
-        messageInput.focus();
+        processingSessions[thisSessionId] = false;
+        if (currentSessionId === thisSessionId) {
+            sendBtn.disabled = false;
+            messageInput.focus();
+        }
     });
 });
 
@@ -396,7 +505,10 @@ function setAgentStatus(agentKey, state, isThinking) {
     }
 }
 
-function appendMessage(role, content, senderName = '', isHtml = false) {
+function appendMessage(role, content, senderName = '', isHtml = false, targetContainer = null) {
+    const container = targetContainer || sessionDOMs[currentSessionId];
+    if (!container) return;
+
     const div = document.createElement('div');
     div.className = `message ${role}`;
     
@@ -410,13 +522,17 @@ function appendMessage(role, content, senderName = '', isHtml = false) {
 
     div.appendChild(nameDiv);
     div.appendChild(contentDiv);
-    chatHistory.appendChild(div);
-    chatHistory.scrollTop = chatHistory.scrollHeight;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
 
     return contentDiv;
 }
 
 function appendToolCall(agentName, toolName, targetContainer = null) {
+    if (targetContainer === "hidden") return;
+    const container = targetContainer || sessionDOMs[currentSessionId];
+    if (!container) return;
+
     const div = document.createElement('div');
     div.className = 'tool-call-block';
     
@@ -429,12 +545,8 @@ function appendToolCall(agentName, toolName, targetContainer = null) {
     
     div.appendChild(header);
     
-    if (targetContainer) {
-        targetContainer.appendChild(div);
-    } else {
-        chatHistory.appendChild(div);
-    }
-    chatHistory.scrollTop = chatHistory.scrollHeight;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
 }
 
 async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
@@ -521,16 +633,30 @@ async function streamChat(agentKey, messages, onChunk, toolContainer = null) {
         return { type: 'error', error: error.message };
     }
 }
-
-async function orchestrateHidden(agentKey, messages) {
-    const result = await streamChat(agentKey, messages, null);
-
+async function orchestrateHidden(agentKey, messages, toolContainer = null) {
+    const result = await streamChat(agentKey, messages, null, toolContainer);
     if (result.type === 'error') {
         return `Error: ${result.error}`;
     }
-
     if (result.type === 'text') {
         return result.content;
+    }
+}
+async function autoResearchTask(finalAnswer) {
+    if (!finalAnswer) return;
+    try {
+        const researchPrompt = `Based on this answer: "${finalAnswer.substring(0, 300)}", generate ONE specific follow-up research question this swarm should investigate autonomously.`;
+        const result = await orchestrateHidden('dgx_spark_2', [
+            DEFAULT_SYSTEM_PROMPT,
+            { role: 'user', content: researchPrompt }
+        ], "hidden");
+        await fetch('http://localhost:3000/api/research/log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question: result, source: 'auto' })
+        });
+    } catch (e) {
+        console.error("Auto-research failed:", e);
     }
 }
 
@@ -540,7 +666,7 @@ async function orchestrate(agentKey, messages) {
     
     const result = await streamChat(agentKey, messages, (text) => {
         contentDiv.innerHTML = marked.parse(text);
-        chatHistory.scrollTop = chatHistory.scrollHeight;
+        if (toolContainer) { toolContainer.scrollTop = toolContainer.scrollHeight; }
     });
 
     if (result.type === 'error') {
@@ -647,18 +773,25 @@ const closeEvoGridBtn = document.getElementById('closeEvoGridBtn');
 const evoGridCore = document.getElementById('evoGridCore');
 const evoArchetypeDetails = document.getElementById('evoArchetypeDetails');
 
-const archetypes = [
-    { x: 0, y: 0, label: "Static Recall", elite: false, score: 0.42, genetics: { memory: "8k", temp: 0.1, top_p: 0.9, tools: "strict" } },
-    { x: 4, y: 4, label: "Chaotic Oracle", elite: true, score: 0.91, genetics: { memory: "128k", temp: 0.9, top_p: 0.95, tools: "exploratory" } },
-    { x: 2, y: 2, label: "Balanced Guide", elite: true, score: 0.85, genetics: { memory: "32k", temp: 0.5, top_p: 0.9, tools: "adaptive" } },
-    { x: 0, y: 4, label: "Rapid Innovator", elite: false, score: 0.65, genetics: { memory: "8k", temp: 0.8, top_p: 0.9, tools: "exploratory" } },
-    { x: 4, y: 0, label: "Deep Archivist", elite: true, score: 0.88, genetics: { memory: "128k", temp: 0.2, top_p: 0.9, tools: "strict" } },
-    { x: 1, y: 1, label: "Cautious Assistant", elite: false, score: 0.55, genetics: { memory: "16k", temp: 0.3, top_p: 0.9, tools: "strict" } },
-    { x: 3, y: 3, label: "Creative Partner", elite: true, score: 0.82, genetics: { memory: "64k", temp: 0.7, top_p: 0.9, tools: "adaptive" } }
-];
-
 function renderEvoGrid() {
     if (!evoGridCore) return;
+    
+    // Attempt to fetch live data if it hasn't been fetched yet
+    fetch('http://localhost:3000/api/dashboard/evolution')
+        .then(res => res.json())
+        .then(json => {
+            if (json.data) {
+                liveArchetypes = json.data;
+            }
+            renderEvoGridUI();
+        })
+        .catch(e => {
+            console.error("Failed to fetch live evolution grid", e);
+            renderEvoGridUI();
+        });
+}
+
+function renderEvoGridUI() {
     evoGridCore.innerHTML = '';
     
     // Y runs from 4 to 0 so 0 is at the bottom visually like a graph
@@ -667,14 +800,15 @@ function renderEvoGrid() {
             const node = document.createElement('div');
             node.className = 'evo-node';
             
-            // Find archetype
-            const arch = archetypes.find(a => a.x === x && a.y === y);
+            // Find archetype from live DB data
+            const arch = liveArchetypes.find(a => a.x === x && a.y === y);
             
             if (arch) {
-                if (arch.elite) node.classList.add('elite');
+                if (arch.is_elite) node.classList.add('elite');
+                const score = typeof arch.score === 'number' ? arch.score.toFixed(2) : '0.00';
                 node.innerHTML = `
-                    <div class="node-label">${arch.label}</div>
-                    <div class="node-score">${arch.score.toFixed(2)}</div>
+                    <div class="node-label">${arch.label || 'Unknown'}</div>
+                    <div class="node-score">${score}</div>
                 `;
                 
                 node.addEventListener('click', () => {
@@ -682,13 +816,13 @@ function renderEvoGrid() {
                     node.classList.add('active');
                     
                     evoArchetypeDetails.innerHTML = `
-                        <h3>Archetype: ${arch.label} ${arch.elite ? '⭐ (Elite)' : ''}</h3>
-                        <p>Performance Score: ${arch.score.toFixed(2)}</p>
+                        <h3>Archetype: ${arch.label || 'Unknown'} ${arch.is_elite ? '⭐ (Elite)' : ''}</h3>
+                        <p>Performance Score: ${score}</p>
                         <div class="genetics">
-                            <div class="genetic-trait">Context: ${arch.genetics.memory}</div>
-                            <div class="genetic-trait">Temp: ${arch.genetics.temp}</div>
-                            <div class="genetic-trait">Top P: ${arch.genetics.top_p}</div>
-                            <div class="genetic-trait">Tools: ${arch.genetics.tools}</div>
+                            <div class="genetic-trait">Context: ${arch.memory_context || 'N/A'}</div>
+                            <div class="genetic-trait">Temp: ${arch.temperature || 'N/A'}</div>
+                            <div class="genetic-trait">Top P: ${arch.top_p || 'N/A'}</div>
+                            <div class="genetic-trait">Tools: ${arch.tools_profile || 'N/A'}</div>
                         </div>
                     `;
                 });
@@ -817,7 +951,8 @@ if (tabChatBtn && tabDashBtn) {
         tabDashBtn.classList.remove('active');
         viewChat.style.display = 'flex';
         viewDashboard.style.display = 'none';
-        if (chatHistory) chatHistory.scrollTop = chatHistory.scrollHeight;
+        const activeContainer = sessionDOMs[currentSessionId];
+        if (activeContainer) activeContainer.scrollTop = activeContainer.scrollHeight;
         if (pollingInterval) clearInterval(pollingInterval);
     });
 
