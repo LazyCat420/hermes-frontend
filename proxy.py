@@ -40,13 +40,6 @@ def fetch_db(query):
 
 PORT = 3005
 
-# Map of local paths to target Hermes endpoints
-TARGETS = {
-    "/api/dgx2/v1/chat/completions": "http://10.0.0.103:8642/v1/chat/completions",
-    "/api/dgx1/v1/chat/completions": "http://10.0.0.141:8642/v1/chat/completions",
-    "/api/jetson/v1/chat/completions": "http://10.0.0.30:8642/v1/chat/completions",
-}
-
 class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -84,10 +77,39 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(data).encode())
             return
             
+        elif self.path == "/api/agents/models":
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            try:
+                import urllib.request
+                req = urllib.request.Request("http://localhost:8888/api/v1/models", method="GET")
+                with urllib.request.urlopen(req, timeout=3) as res:
+                    data = res.read()
+                    self.wfile.write(data)
+            except Exception as e:
+                # Fallback to empty if gateway is unreachable
+                self.wfile.write(json.dumps({}).encode())
+            return
+            
         super().do_GET()
 
     def do_POST(self):
-        if self.path == "/api/evolution/mutate":
+        if self.path == "/api/chat":
+            target_url = "http://localhost:11434/api/chat"
+        elif self.path == "/api/generate":
+            target_url = "http://localhost:11434/api/generate"
+        elif self.path.startswith("/api/") and "/v1/chat/completions" in self.path:
+            # Dynamic proxy: /api/dgx_spark_2/v1/chat/completions -> http://localhost:8888/api/v1/hermes/dgx_spark_2/v1/chat/completions
+            parts = self.path.split("/")
+            if len(parts) >= 3:
+                endpoint_name = parts[2]
+                target_url = f"http://localhost:8888/api/v1/hermes/{endpoint_name}/v1/chat/completions"
+            else:
+                self.send_error(400, "Bad Request")
+                return
+        elif self.path == "/api/evolution/mutate":
             content_length = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(content_length))
             x = body.get('x', 0)

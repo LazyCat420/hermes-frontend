@@ -23,82 +23,6 @@
     </div>
 
     <div class="app-container" id="viewChat">
-        <!-- Sidebar: Agent Status -->
-        <aside class="sidebar glass-panel">
-            <h2 class="sidebar-title">AGENT STATUS</h2>
-            
-            <!-- DGX Spark 2 -->
-            <div class="agent-card" id="agent-dgx2">
-                <div class="agent-header" style="justify-content: space-between;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <div class="status-indicator online"></div>
-                        <h3>DGX Spark 2 (Primary)</h3>
-                    </div>
-                    <label class="switch" title="Toggle Agent Participation">
-                        <input type="checkbox" id="enable-dgx2" checked>
-                        <span class="slider round"></span>
-                    </label>
-                </div>
-                <div class="agent-model">Qwen/Qwen3.5-72B</div>
-                <div class="agent-state" id="state-dgx2">Standing by</div>
-                <div class="agent-pills" id="pills-dgx2" style="display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap;"></div>
-            </div>
-
-            <!-- DGX Spark 1 -->
-            <div class="agent-card" id="agent-dgx1">
-                <div class="agent-header" style="justify-content: space-between;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <div class="status-indicator online"></div>
-                        <h3>DGX Spark 1</h3>
-                    </div>
-                    <label class="switch" title="Toggle Agent Participation">
-                        <input type="checkbox" id="enable-dgx1" checked>
-                        <span class="slider round"></span>
-                    </label>
-                </div>
-                <div class="agent-model">Intel/Qwen3.5-122B</div>
-                <div class="agent-state" id="state-dgx1">Standing by</div>
-                <div class="agent-pills" id="pills-dgx1" style="display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap;"></div>
-            </div>
-
-            <!-- Jetson Orin AGX -->
-            <div class="agent-card" id="agent-jetson">
-                <div class="agent-header" style="justify-content: space-between;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <div class="status-indicator online"></div>
-                        <h3>Jetson Orin AGX 64GB</h3>
-                    </div>
-                    <label class="switch" title="Toggle Agent Participation">
-                        <input type="checkbox" id="enable-jetson" checked>
-                        <span class="slider round"></span>
-                    </label>
-                </div>
-                <div class="agent-model">Kbenkhalad/Qwen3.5-35B</div>
-                <div class="agent-state" id="state-jetson">Standing by</div>
-                <div class="agent-pills" id="pills-jetson" style="display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap;"></div>
-            </div>
-            
-            <div class="sidebar-footer">
-                <p>Hermes Multi-Agent Orchestrator</p>
-                <p class="subtitle">Direct API Hub</p>
-                <button id="evoGridBtn" class="retro-btn" style="margin-top: 16px; width: 100%; font-size: 0.9rem; border-color: rgba(245, 158, 11, 0.8); color: #fbbf24;" title="View Evolutionary Strategy Grid">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="3" width="7" height="7"></rect>
-                        <rect x="14" y="3" width="7" height="7"></rect>
-                        <rect x="14" y="14" width="7" height="7"></rect>
-                        <rect x="3" y="14" width="7" height="7"></rect>
-                    </svg>
-                    EVO GRID MAP
-                </button>
-                <button id="settingsBtn" class="retro-btn" style="margin-top: 8px; width: 100%; font-size: 0.9rem;" title="Open Settings">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="3"></circle>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-                    </svg>
-                    SETTINGS
-                </button>
-            </div>
-        </aside>
 
         <!-- Main Chat Area -->
         <main class="chat-area">
@@ -147,7 +71,7 @@
         </main>
 
         <!-- Right Sidebar: Chat History -->
-        <aside class="right-sidebar glass-panel">
+        <aside class="right-sidebar glass-panel" style="display: flex; flex-direction: column;">
             <div class="right-sidebar-header" style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px;">
                 <h2 class="sidebar-title" style="margin-bottom: 0;">MEMORY BANK</h2>
                 <button id="newChatBtn" class="retro-btn" style="width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 0.95rem;" title="Start new session">
@@ -158,8 +82,28 @@
                     NEW CHAT
                 </button>
             </div>
-            <div class="session-list" id="sessionList">
+            <div class="session-list" id="sessionList" style="flex: 1; overflow-y: auto;">
                 <!-- Sessions populated via JS -->
+            </div>
+            
+            <!-- Moved Footer Controls here -->
+            <div class="sidebar-footer" style="margin-top: 16px; border-top: 1px solid rgba(0, 229, 255, 0.2); padding-top: 16px;">
+                <button id="evoGridBtn" class="retro-btn" style="width: 100%; font-size: 0.9rem; border-color: rgba(245, 158, 11, 0.8); color: #fbbf24; margin-bottom: 8px;" title="View Evolutionary Strategy Grid">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="3" width="7" height="7"></rect>
+                        <rect x="14" y="14" width="7" height="7"></rect>
+                        <rect x="3" y="14" width="7" height="7"></rect>
+                    </svg>
+                    EVO GRID MAP
+                </button>
+                <button id="settingsBtn" class="retro-btn" style="width: 100%; font-size: 0.9rem;" title="Open Settings">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                    SETTINGS
+                </button>
             </div>
         </aside>
     </div>

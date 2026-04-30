@@ -1,9 +1,5 @@
-// Configuration for the 3 standalone Hermes endpoints
-const AGENTS = {
-    'dgx_spark_2': { id: 'dgx2', name: 'DGX Spark 2 (Primary)', url: '/api/dgx2/v1/chat/completions', model: 'Qwen/Qwen3.5-72B' },
-    'dgx_spark_1': { id: 'dgx1', name: 'DGX Spark 1', url: '/api/dgx1/v1/chat/completions', model: 'Intel/Qwen3.5-122B' },
-    'jetson': { id: 'jetson', name: 'Jetson Orin AGX 64GB', url: '/api/jetson/v1/chat/completions', model: 'Kbenkhalad/Qwen3.5-35B' }
-};
+// Dynamic Configuration populated by backend
+let AGENTS = {};
 
 // Persistence State
 const STORAGE_KEY = 'hermes_sessions';
@@ -636,12 +632,46 @@ document.addEventListener('DOMContentLoaded', async () => {
 newChatBtn.addEventListener('click', startNewChat);
 
 function getActiveAgents() {
-    const active = Object.keys(AGENTS).filter(agentKey => {
-        const checkbox = document.getElementById(`enable-${AGENTS[agentKey].id}`);
-        return checkbox ? checkbox.checked : true;
-    });
-    return active.length > 0 ? active : ['dgx_spark_2'];
+    return Object.keys(AGENTS);
 }
+
+async function pollAgentHealth() {
+    try {
+        const res = await fetch('http://localhost:3005/api/agents/models');
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        let newAgents = {};
+        
+        // Loop through the actual endpoints reported by the vLLM backend
+        if (data) {
+            Object.keys(data).forEach(endpointKey => {
+                const ep = data[endpointKey];
+                // The root JSON has metadata keys we need to skip
+                if (ep && typeof ep === 'object' && ep.status === 'online') {
+                    if (ep.models && ep.models.length > 0) {
+                        const safeId = endpointKey.replace(/[^a-zA-Z0-9]/g, '');
+                        newAgents[endpointKey] = {
+                            id: safeId,
+                            name: endpointKey.replace(/_/g, ' ').toUpperCase(),
+                            url: `/api/${endpointKey}/v1/chat/completions`,
+                            model: ep.models[0].id
+                        };
+                    }
+                }
+            });
+        }
+        
+        AGENTS = newAgents;
+        
+    } catch (e) {
+        console.warn("Failed to poll agent models:", e);
+    }
+}
+
+// Poll immediately, then every 10 seconds
+pollAgentHealth();
+setInterval(pollAgentHealth, 10000);
 
 messageInput.addEventListener('input', function() {
     this.style.height = 'auto';
@@ -705,6 +735,15 @@ chatForm.addEventListener('submit', async (e) => {
 });
 
 async function executeMission(thisSessionId, thisHistory, runStore, activeAgents, text, thisContainer) {
+    if (activeAgents.length === 0) {
+        appendMessage('system', `<span style="color: #ef4444;">No Hermes Gateway endpoints are currently online. Mission aborted.</span>`, 'System', true, thisContainer);
+        processingSessions[thisSessionId] = false;
+        if (currentSessionId === thisSessionId) {
+            sendBtn.disabled = false;
+        }
+        return;
+    }
+
     let planningBoard = document.getElementById(`planning-board-${thisSessionId}`);
     let findingsBoard = document.getElementById(`findings-board-${thisSessionId}`);
     let checkpointBoard = document.getElementById(`checkpoint-board-${thisSessionId}`);
@@ -1092,6 +1131,7 @@ async function executeMission(thisSessionId, thisHistory, runStore, activeAgents
     }
 }
 function setAgentStatus(agentKey, state, isThinking) {
+    if (!AGENTS[agentKey]) return;
     const card = document.getElementById(`agent-${AGENTS[agentKey].id}`);
     const stateText = document.getElementById(`state-${AGENTS[agentKey].id}`);
     if (card && stateText) {
