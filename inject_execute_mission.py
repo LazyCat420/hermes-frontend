@@ -405,7 +405,7 @@ async function executeMission(thisSessionId, thisHistory, missionState, activeAg
             }
             
             const successRate = finalResult.content && finalResult.content.includes('TASK FAILED') ? 0.2 : 1.0;
-            fetch('http://localhost:3000/api/evals/submit', {
+            fetch('http://localhost:3005/api/evals/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
