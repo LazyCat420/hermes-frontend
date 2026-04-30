@@ -89,6 +89,7 @@ class CORSAndProxyHandler(http.server.SimpleHTTPRequestHandler):
                     data = res.read()
                     self.wfile.write(data)
             except Exception as e:
+                print(f"Failed to fetch models from trading bot: {e}")
                 # Fallback to empty if gateway is unreachable
                 self.wfile.write(json.dumps({}).encode())
             return
@@ -301,9 +302,7 @@ if __name__ == "__main__":
     try:
         with ThreadingTCPServer(("", PORT), CORSAndProxyHandler) as httpd:
             print(f"Serving UI at http://localhost:{PORT}")
-            print("Proxying API requests to bypass CORS:")
-            for path, target in TARGETS.items():
-                print(f"  {path} -> {target}")
+            print("Dynamic routing enabled: mapping /api/X/v1 to http://localhost:8888/api/v1/hermes/X")
             httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down server...")
